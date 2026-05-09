@@ -14,6 +14,11 @@ export type BookLoanInsert = {
   author: string;
 };
 
+export type BookLoanRow = BookLoanInsert & {
+  id: string;
+  created_at?: string;
+};
+
 const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const supabaseUrl = rawSupabaseUrl?.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '');
@@ -37,7 +42,21 @@ export const toSchoolCountRows = (schools: School[]): SchoolCountRow[] =>
   }));
 
 export const insertBookLoan = (loan: BookLoanInsert) => {
-  if (!supabase) return Promise.resolve({ error: null });
+  if (!supabase) return Promise.resolve({ data: null, error: null });
 
-  return supabase.from('book_loans').insert(loan);
+  return supabase
+    .from('book_loans')
+    .insert(loan)
+    .select('id, school_id, student_number, title, author, created_at')
+    .single();
+};
+
+export const fetchBookLoans = (schoolId: string) => {
+  if (!supabase) return Promise.resolve({ data: [] as BookLoanRow[], error: null });
+
+  return supabase
+    .from('book_loans')
+    .select('id, school_id, student_number, title, author, created_at')
+    .eq('school_id', schoolId)
+    .order('created_at', { ascending: false });
 };

@@ -9,10 +9,12 @@ import { ArrowDownRight, ArrowUpRight, Award, BookOpenText, Cloud, CloudOff, Min
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { INITIAL_SCHOOLS, MONTHS, REGIONS } from './constants';
 import {
+  fetchBookLoans,
   insertBookLoan,
   isSupabaseConfigured,
   supabase,
   toSchoolCountRows,
+  type BookLoanRow,
   type SchoolCountRow,
 } from './supabase';
 import { MonthlySchool, School } from './types';
@@ -28,6 +30,17 @@ const getBookLoanErrorMessage = (error: { code?: string; message?: string }) => 
   }
 
   return '책 등록 기록 저장에 실패했습니다.';
+};
+
+const compareStudentNumbers = (a: string, b: string) => {
+  const aNumber = Number.parseInt(a, 10);
+  const bNumber = Number.parseInt(b, 10);
+
+  if (Number.isFinite(aNumber) && Number.isFinite(bNumber) && aNumber !== bNumber) {
+    return aNumber - bNumber;
+  }
+
+  return a.localeCompare(b, 'ko');
 };
 
 type RegionProperties = {
@@ -595,65 +608,143 @@ const Card = ({ children, className = '' }: { children: React.ReactNode; classNa
 );
 
 const DataSettingsModal = ({
+  bookLoans,
+  bookLoanReviewError,
   schools,
   selectedMonth,
   onClose,
   onUpdate,
 }: {
+  bookLoans: BookLoanRow[];
+  bookLoanReviewError: string;
   schools: School[];
   selectedMonth: string;
   onClose: () => void;
   onUpdate: (id: string, count: number) => void;
-}) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-    <section className="flex max-h-[86vh] w-full max-w-2xl flex-col rounded-[32px] border border-[rgba(10,19,23,0.08)] bg-white shadow-[rgba(20,22,26,0.3)_0px_1px_4px_0px]">
-      <header className="flex items-start justify-between gap-4 border-b border-[rgba(10,19,23,0.08)] px-8 py-6">
-        <div>
-          <h2 className="text-2xl font-medium text-[#0a1317]">데이터 수정</h2>
-          <p className="mt-1 text-sm font-medium leading-6 text-[#465a69]">
-            오늘 기준 학교별 대출 권수를 바꾸면 지도와 순위가 바로 갱신됩니다.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="설정창 닫기"
-          className="rounded-full p-2 text-[#465a69] transition hover:bg-[#f5f6f7] hover:text-[#0a1317] active:scale-95"
-        >
-          <X size={22} />
-        </button>
-      </header>
-      <div className="overflow-y-auto px-8 py-6">
-        <div className="space-y-3">
-          {schools.map((school) => {
-            const region = REGIONS.find((item) => item.id === school.region);
+}) => {
+  const [activeTab, setActiveTab] = useState<'edit' | 'review'>('edit');
+  const loansByStudentNumber = useMemo(
+    () =>
+      Object.entries(
+        bookLoans.reduce<Record<string, BookLoanRow[]>>((groups, loan) => {
+          const studentNumber = loan.student_number.trim() || '미입력';
+          groups[studentNumber] = [...(groups[studentNumber] ?? []), loan];
+          return groups;
+        }, {}),
+      ).sort(([a], [b]) => compareStudentNumbers(a, b)),
+    [bookLoans],
+  );
 
-            return (
-              <label
-                key={school.id}
-                className="grid grid-cols-[minmax(0,1fr)_112px] items-center gap-4 rounded-2xl border border-[rgba(10,19,23,0.08)] bg-[#f5f6f7] px-4 py-3"
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-bold text-[#0a1317]">{school.name}</span>
-                  <span className="block text-xs font-medium text-[#637381]">{region?.name}</span>
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  value={getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate)}
-                  onChange={(event) =>
-                    onUpdate(school.id, Number.parseInt(event.target.value, 10) || 0)
-                  }
-                  className="h-11 w-full rounded-lg border border-[rgba(10,19,23,0.12)] bg-white p-2 text-right font-black text-[#0a1317] outline-none transition focus:border-2 focus:border-[#0866ff]"
-                />
-              </label>
-            );
-          })}
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <section className="flex max-h-[86vh] w-full max-w-2xl flex-col rounded-[32px] border border-[rgba(10,19,23,0.08)] bg-white shadow-[rgba(20,22,26,0.3)_0px_1px_4px_0px]">
+        <header className="flex items-start justify-between gap-4 border-b border-[rgba(10,19,23,0.08)] px-8 py-6">
+          <div>
+            <h2 className="text-2xl font-medium text-[#0a1317]">데이터 수정</h2>
+            <p className="mt-1 text-sm font-medium leading-6 text-[#465a69]">
+              오늘 기준 학교별 대출 권수와 등록 기록을 확인합니다.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="설정창 닫기"
+            className="rounded-full p-2 text-[#465a69] transition hover:bg-[#f5f6f7] hover:text-[#0a1317] active:scale-95"
+          >
+            <X size={22} />
+          </button>
+        </header>
+        <div className="border-b border-[rgba(10,19,23,0.08)] px-8 pt-4">
+          <div className="inline-flex rounded-xl bg-[#eef1f4] p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('edit')}
+              className={`h-10 rounded-lg px-4 text-sm font-black transition ${
+                activeTab === 'edit' ? 'bg-white text-[#0a1317] shadow-sm' : 'text-[#637381] hover:text-[#0a1317]'
+              }`}
+            >
+              대출 권수 수정
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('review')}
+              className={`h-10 rounded-lg px-4 text-sm font-black transition ${
+                activeTab === 'review' ? 'bg-white text-[#0a1317] shadow-sm' : 'text-[#637381] hover:text-[#0a1317]'
+              }`}
+            >
+              데이터 검토
+            </button>
+          </div>
         </div>
-      </div>
-    </section>
-  </div>
-);
+        <div className="overflow-y-auto px-8 py-6">
+          {activeTab === 'edit' ? (
+            <div className="space-y-3">
+              {schools.map((school) => {
+                const region = REGIONS.find((item) => item.id === school.region);
+
+                return (
+                  <label
+                    key={school.id}
+                    className="grid grid-cols-[minmax(0,1fr)_112px] items-center gap-4 rounded-2xl border border-[rgba(10,19,23,0.08)] bg-[#f5f6f7] px-4 py-3"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-bold text-[#0a1317]">{school.name}</span>
+                      <span className="block text-xs font-medium text-[#637381]">{region?.name}</span>
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate)}
+                      onChange={(event) =>
+                        onUpdate(school.id, Number.parseInt(event.target.value, 10) || 0)
+                      }
+                      className="h-11 w-full rounded-lg border border-[rgba(10,19,23,0.12)] bg-white p-2 text-right font-black text-[#0a1317] outline-none transition focus:border-2 focus:border-[#0866ff]"
+                    />
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {bookLoanReviewError && (
+                <p className="rounded-2xl bg-[#fff1f1] px-4 py-3 text-sm font-bold leading-5 text-[#c62828]">
+                  {bookLoanReviewError}
+                </p>
+              )}
+              {!bookLoanReviewError && loansByStudentNumber.length === 0 && (
+                <p className="rounded-2xl bg-[#f5f6f7] px-4 py-5 text-sm font-bold text-[#637381]">
+                  등록된 책 데이터가 없습니다.
+                </p>
+              )}
+              {loansByStudentNumber.map(([studentNumber, loans]) => (
+                <section
+                  key={studentNumber}
+                  className="rounded-2xl border border-[rgba(10,19,23,0.08)] bg-[#f5f6f7] px-4 py-4"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-base font-black text-[#0a1317]">{studentNumber}번</h3>
+                    <span className="text-xs font-black text-[#0143b5]">{loans.length}권</span>
+                  </div>
+                  <ul className="mt-3 space-y-2">
+                    {loans.map((loan) => (
+                      <li
+                        key={loan.id}
+                        className="rounded-xl border border-[rgba(10,19,23,0.08)] bg-white px-3 py-3"
+                      >
+                        <p className="truncate text-sm font-black text-[#0a1317]">{loan.title}</p>
+                        <p className="mt-1 truncate text-xs font-bold text-[#637381]">{loan.author}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+};
 
 const BookLoanModal = ({
   bookAuthor,
@@ -754,10 +845,13 @@ export default function App() {
   const [bookAuthor, setBookAuthor] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
   const [bookTitle, setBookTitle] = useState('');
+  const [bookLoans, setBookLoans] = useState<BookLoanRow[]>([]);
+  const [bookLoanReviewError, setBookLoanReviewError] = useState('');
   const [loanSubmitError, setLoanSubmitError] = useState('');
   const [syncStatus, setSyncStatus] = useState(
     isSupabaseConfigured ? '공유 DB 연결 중' : '로컬 저장 모드',
   );
+  const settingsClickCountRef = useRef(0);
   const recentLoanTimestampsRef = useRef<number[]>([]);
   const rivalResponseTimeoutsRef = useRef<number[]>([]);
   const selectedMonth = getMonthId(reportDate);
@@ -777,9 +871,26 @@ export default function App() {
       });
   };
 
+  const loadBookLoans = async () => {
+    const { data, error } = await fetchBookLoans(OUR_SCHOOL_ID);
+
+    if (error) {
+      console.error('Book loan fetch failed:', error);
+      setBookLoanReviewError(getBookLoanErrorMessage(error));
+      return;
+    }
+
+    setBookLoanReviewError('');
+    setBookLoans((data ?? []) as BookLoanRow[]);
+  };
+
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(schools));
   }, [schools]);
+
+  useEffect(() => {
+    loadBookLoans();
+  }, []);
 
   useEffect(
     () => () => {
@@ -954,7 +1065,7 @@ export default function App() {
 
     setLoanSubmitError('');
 
-    const { error } = await insertBookLoan({
+    const { data, error } = await insertBookLoan({
       school_id: OUR_SCHOOL_ID,
       student_number: normalizedStudentNumber,
       title,
@@ -965,6 +1076,11 @@ export default function App() {
       console.error('Book loan insert failed:', error);
       setLoanSubmitError(getBookLoanErrorMessage(error));
       return;
+    }
+
+    if (data) {
+      setBookLoans((prev) => [data as BookLoanRow, ...prev]);
+      setBookLoanReviewError('');
     }
 
     setSchools((prev) => {
@@ -984,6 +1100,15 @@ export default function App() {
     setIsBookLoanModalOpen(false);
   };
 
+  const handleSettingsIconClick = () => {
+    settingsClickCountRef.current += 1;
+
+    if (settingsClickCountRef.current < 10) return;
+
+    settingsClickCountRef.current = 0;
+    setIsSettingsOpen(true);
+  };
+
   return (
     <main className="min-h-screen overflow-y-auto bg-white font-sans text-[#0a1317] xl:h-screen xl:overflow-hidden">
       <header className="border-b border-[rgba(10,19,23,0.08)] bg-white px-4 py-4 md:px-6 xl:px-10">
@@ -991,7 +1116,7 @@ export default function App() {
           <div className="flex min-w-0 items-center gap-4">
             <button
               type="button"
-              onClick={() => setIsSettingsOpen(true)}
+              onClick={handleSettingsIconClick}
               aria-label="데이터 수정"
               title="데이터 수정"
               className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-[#0a1317] text-white transition hover:bg-[#0143b5] active:scale-95"
@@ -1128,6 +1253,8 @@ export default function App() {
 
       {isSettingsOpen && (
         <DataSettingsModal
+          bookLoans={bookLoans}
+          bookLoanReviewError={bookLoanReviewError}
           schools={schools}
           selectedMonth={selectedMonth}
           onClose={() => setIsSettingsOpen(false)}
