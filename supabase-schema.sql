@@ -58,3 +58,45 @@ begin
   end if;
 end;
 $$;
+
+create table if not exists public.book_loans (
+  id uuid primary key default gen_random_uuid(),
+  school_id text not null,
+  title text not null,
+  author text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.book_loans enable row level security;
+
+drop policy if exists "Anyone can read book loans" on public.book_loans;
+create policy "Anyone can read book loans"
+on public.book_loans
+for select
+to anon
+using (true);
+
+drop policy if exists "Anyone can insert book loans" on public.book_loans;
+create policy "Anyone can insert book loans"
+on public.book_loans
+for insert
+to anon
+with check (
+  school_id = 'daegu'
+  and length(trim(title)) > 0
+  and length(trim(author)) > 0
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'book_loans'
+  ) then
+    alter publication supabase_realtime add table public.book_loans;
+  end if;
+end;
+$$;

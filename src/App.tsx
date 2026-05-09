@@ -3,18 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { geoMercator, geoPath } from 'd3-geo';
-import { Award, BookOpenText, Plus, Settings2, X } from 'lucide-react';
+import { Award, BookOpenText, Cloud, CloudOff, Plus, X } from 'lucide-react';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { INITIAL_SCHOOLS, MONTHS, REGIONS } from './constants';
-import { isSupabaseConfigured, supabase, toSchoolCountRows, type SchoolCountRow } from './supabase';
+import {
+  insertBookLoan,
+  isSupabaseConfigured,
+  supabase,
+  toSchoolCountRows,
+  type SchoolCountRow,
+} from './supabase';
 import { MonthlySchool, School } from './types';
 
 const geoUrl = '/maps/sido.geojson';
 const OUR_SCHOOL_ID = 'daegu';
 const STORAGE_KEY = 'jangdong-library-schools-v1';
-const RIVAL_UPDATE_META_KEY = 'jangdong-library-rival-meta-v1';
+const RECENT_LOAN_WINDOW_MS = 10 * 60 * 1000;
 
 type RegionProperties = {
   name?: string;
@@ -132,19 +138,23 @@ const getStoredSchools = () => {
   }
 };
 
-const getRivalIncrement = (school: School, ourCount: number, currentCount: number) => {
-  const pressureBonus = currentCount <= ourCount + 4 ? 0.35 : 0;
-  const frontRunnerBonus = currentCount >= ourCount + 8 ? 0.12 : 0;
-  const baseChance = 0.2 + pressureBonus + frontRunnerBonus;
+const hasMonthToDateCountChanges = (prev: School[], next: School[], selectedMonth: string) =>
+  next.some((school) => {
+    const previousSchool = prev.find((item) => item.id === school.id);
+    if (!previousSchool) return true;
 
-  if (Math.random() > baseChance) return 0;
-  if (school.region === 'seoul' || school.region === 'gyeonggi' || school.region === 'sejong') {
-    return Math.random() > 0.82 ? 2 : 1;
-  }
-  return Math.random() > 0.92 ? 2 : 1;
-};
+    return (
+      getMonthToDateCount(previousSchool.monthlyLending[selectedMonth] ?? 0, reportDate) !==
+      getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate)
+    );
+  });
 
-const applyRivalGrowth = (schools: School[], selectedMonth: string, eventCount: number) => {
+const applyRivalGrowth = (
+  schools: School[],
+  selectedMonth: string,
+  eventCount: number,
+  responseIntensity = 1,
+) => {
   if (eventCount <= 0) return schools;
 
   let nextSchools = schools;
@@ -154,16 +164,54 @@ const applyRivalGrowth = (schools: School[], selectedMonth: string, eventCount: 
     const ourCount = ourSchool
       ? getMonthToDateCount(ourSchool.monthlyLending[selectedMonth] ?? 0, reportDate)
       : 0;
+    const rivals = nextSchools
+      .filter((school) => school.id !== OUR_SCHOOL_ID)
+      .map((school) => ({
+        school,
+        count: getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate),
+      }));
+    const leaderCount = Math.max(ourCount, ...rivals.map((rival) => rival.count));
+    const isOurSchoolLeading = ourCount >= leaderCount;
+    const baseResponseChance = isOurSchoolLeading ? 0.46 : 0.24;
+    const responseChance = Math.min(isOurSchoolLeading ? 0.68 : 0.42, baseResponseChance * responseIntensity);
 
-    nextSchools = nextSchools.map((school) => {
-      if (school.id === OUR_SCHOOL_ID) return school;
+    if (Math.random() > responseChance) continue;
 
-      const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
-      const increment = getRivalIncrement(school, ourCount, currentCount);
-      if (increment === 0) return school;
+    const weightedRivals = rivals
+      .map((rival) => {
+        const gapFromUs = rival.count - ourCount;
+        const leadGap = leaderCount - ourCount;
 
-      return updateSchoolMonthToDateCount(school, selectedMonth, currentCount + increment);
+        if (gapFromUs >= leadGap && leadGap >= 4) {
+          return { ...rival, weight: 0.06 };
+        }
+
+        if (gapFromUs >= 1 && gapFromUs <= 3) {
+          return { ...rival, weight: 1.4 };
+        }
+
+        if (gapFromUs <= 0 && gapFromUs >= -3) {
+          return { ...rival, weight: isOurSchoolLeading ? 1.2 : 0.7 };
+        }
+
+        return { ...rival, weight: 0.35 };
+      })
+      .filter((rival) => rival.weight > 0);
+
+    const totalWeight = weightedRivals.reduce((total, rival) => total + rival.weight, 0);
+    let pick = Math.random() * totalWeight;
+    const selectedRival = weightedRivals.find((rival) => {
+      pick -= rival.weight;
+      return pick <= 0;
     });
+
+    if (!selectedRival) continue;
+
+    nextSchools = nextSchools.map((school) =>
+      school.id === selectedRival.school.id
+        ? updateSchoolMonthToDateCount(school, selectedMonth, selectedRival.count + 1)
+        : school,
+    );
   }
 
   return nextSchools;
@@ -178,10 +226,14 @@ const mergeRemoteSchoolRows = (schools: School[], rows: SchoolCountRow[]) => {
   }));
 };
 
-const getRegionColor = (count: number) => {
-  if (count >= 17) return '#0143b5';
-  if (count >= 13) return '#4f9df7';
-  if (count >= 9) return '#9fcbff';
+const getRelativeRegionColor = (count: number, allCounts: number[]) => {
+  const sortedCounts = [...new Set(allCounts)].sort((a, b) => b - a);
+  if (sortedCounts.length <= 1) return '#9fcbff';
+
+  const rankRatio = sortedCounts.indexOf(count) / Math.max(1, sortedCounts.length - 1);
+  if (rankRatio <= 0.25) return '#0143b5';
+  if (rankRatio <= 0.5) return '#4f9df7';
+  if (rankRatio <= 0.75) return '#9fcbff';
   return '#d7e8ff';
 };
 
@@ -241,6 +293,7 @@ const KoreaMap = ({
         .map(([regionId]) => regionId),
     [regionalCounts],
   );
+  const regionCountValues = useMemo(() => Object.values(regionalCounts), [regionalCounts]);
   const regionLabelPoints = useMemo(
     () =>
       new Map(
@@ -328,7 +381,7 @@ const KoreaMap = ({
             <path
               key={regionName}
               d={path ?? undefined}
-              fill={isSelected ? '#0064e0' : getRegionColor(count)}
+              fill={isSelected ? '#0064e0' : getRelativeRegionColor(count, regionCountValues)}
               stroke={isSelected ? '#0143b5' : '#ffffff'}
               strokeWidth={isSelected ? 2.2 : 1.6}
               className="cursor-pointer transition-colors duration-200"
@@ -350,7 +403,11 @@ const KoreaMap = ({
               C ${dokdoPoint[0] + 11} ${dokdoPoint[1] - 1}, ${dokdoPoint[0] + 8} ${dokdoPoint[1] + 6}, ${dokdoPoint[0] + 1} ${dokdoPoint[1] + 8}
               C ${dokdoPoint[0] - 6} ${dokdoPoint[1] + 10}, ${dokdoPoint[0] - 12} ${dokdoPoint[1] + 4}, ${dokdoPoint[0] - 9} ${dokdoPoint[1] - 2}
               Z`}
-            fill={isGyeongbukSelected ? '#0064e0' : getRegionColor(regionalCounts.gyeongbuk || 0)}
+            fill={
+              isGyeongbukSelected
+                ? '#0064e0'
+                : getRelativeRegionColor(regionalCounts.gyeongbuk || 0, regionCountValues)
+            }
             stroke="#ffffff"
             strokeWidth={1.4}
             className="transition-colors duration-200"
@@ -364,7 +421,11 @@ const KoreaMap = ({
               C ${dokdoPoint[0] + 26} ${dokdoPoint[1] + 6}, ${dokdoPoint[0] + 21} ${dokdoPoint[1] + 10}, ${dokdoPoint[0] + 16} ${dokdoPoint[1] + 8}
               C ${dokdoPoint[0] + 12} ${dokdoPoint[1] + 6}, ${dokdoPoint[0] + 12} ${dokdoPoint[1] + 3}, ${dokdoPoint[0] + 14} ${dokdoPoint[1] + 1}
               Z`}
-            fill={isGyeongbukSelected ? '#0064e0' : getRegionColor(regionalCounts.gyeongbuk || 0)}
+            fill={
+              isGyeongbukSelected
+                ? '#0064e0'
+                : getRelativeRegionColor(regionalCounts.gyeongbuk || 0, regionCountValues)
+            }
             stroke="#ffffff"
             strokeWidth={1.4}
             className="transition-colors duration-200"
@@ -482,27 +543,6 @@ const Card = ({ children, className = '' }: { children: React.ReactNode; classNa
   </section>
 );
 
-const PillButton = ({
-  children,
-  className = '',
-  onClick,
-  ariaLabel,
-}: {
-  children: React.ReactNode;
-  className?: string;
-  onClick?: () => void;
-  ariaLabel?: string;
-}) => (
-  <button
-    type="button"
-    onClick={onClick}
-    aria-label={ariaLabel}
-    className={`inline-flex items-center justify-center gap-2 rounded-[100px] px-[30px] py-[14px] text-sm font-bold tracking-[-0.14px] transition duration-200 active:scale-95 ${className}`}
-  >
-    {children}
-  </button>
-);
-
 const DataSettingsModal = ({
   schools,
   selectedMonth,
@@ -564,15 +604,94 @@ const DataSettingsModal = ({
   </div>
 );
 
+const BookLoanModal = ({
+  bookAuthor,
+  errorMessage,
+  bookTitle,
+  onBookAuthorChange,
+  onBookTitleChange,
+  onClose,
+  onSubmit,
+}: {
+  bookAuthor: string;
+  errorMessage: string;
+  bookTitle: string;
+  onBookAuthorChange: (author: string) => void;
+  onBookTitleChange: (title: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <section className="w-full max-w-md rounded-[32px] border border-[rgba(10,19,23,0.08)] bg-white shadow-[rgba(20,22,26,0.3)_0px_1px_4px_0px]">
+      <header className="flex items-start justify-between gap-4 border-b border-[rgba(10,19,23,0.08)] px-6 py-5">
+        <h2 className="text-2xl font-medium text-[#0a1317]">빌린 책 등록</h2>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="책 등록창 닫기"
+          className="rounded-full p-2 text-[#465a69] transition hover:bg-[#f5f6f7] hover:text-[#0a1317] active:scale-95"
+        >
+          <X size={22} />
+        </button>
+      </header>
+      <form
+        className="p-6"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <label className="block text-sm font-black text-[#0a1317]" htmlFor="book-title-modal">
+          책 제목
+        </label>
+        <input
+          id="book-title-modal"
+          type="text"
+          autoFocus
+          value={bookTitle}
+          onChange={(event) => onBookTitleChange(event.target.value)}
+          placeholder="책 제목을 입력하세요"
+          className="mt-3 h-12 w-full min-w-0 rounded-xl border border-[rgba(10,19,23,0.12)] bg-white px-3 text-base font-bold text-[#0a1317] outline-none transition placeholder:text-[#8c9aa5] focus:border-2 focus:border-[#0866ff]"
+        />
+        <label className="mt-4 block text-sm font-black text-[#0a1317]" htmlFor="book-author-modal">
+          글쓴이
+        </label>
+        <input
+          id="book-author-modal"
+          type="text"
+          value={bookAuthor}
+          onChange={(event) => onBookAuthorChange(event.target.value)}
+          placeholder="글쓴이를 입력하세요"
+          className="mt-3 h-12 w-full min-w-0 rounded-xl border border-[rgba(10,19,23,0.12)] bg-white px-3 text-base font-bold text-[#0a1317] outline-none transition placeholder:text-[#8c9aa5] focus:border-2 focus:border-[#0866ff]"
+        />
+        {errorMessage && (
+          <p className="mt-3 text-sm font-bold leading-5 text-[#c62828]">{errorMessage}</p>
+        )}
+        <button
+          type="submit"
+          disabled={!bookTitle.trim() || !bookAuthor.trim()}
+          className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0143b5] px-4 text-sm font-black text-white transition hover:bg-[#0064e0] active:scale-95 disabled:cursor-not-allowed disabled:bg-[#aebbd0] disabled:active:scale-100"
+        >
+          <Plus size={18} />
+          1권 등록
+        </button>
+      </form>
+    </section>
+  </div>
+);
+
 export default function App() {
   const [schools, setSchools] = useState<School[]>(getStoredSchools);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [loanAddAmount, setLoanAddAmount] = useState(1);
-  const [rivalNotice, setRivalNotice] = useState('다른 학교도 조금씩 기록을 따라오고 있어요.');
+  const [isBookLoanModalOpen, setIsBookLoanModalOpen] = useState(false);
+  const [bookAuthor, setBookAuthor] = useState('');
+  const [bookTitle, setBookTitle] = useState('');
+  const [loanSubmitError, setLoanSubmitError] = useState('');
   const [syncStatus, setSyncStatus] = useState(
     isSupabaseConfigured ? '공유 DB 연결 중' : '로컬 저장 모드',
   );
-  const [isSharedDataReady, setIsSharedDataReady] = useState(!isSupabaseConfigured);
+  const recentLoanTimestampsRef = useRef<number[]>([]);
+  const rivalResponseTimeoutsRef = useRef<number[]>([]);
   const selectedMonth = getMonthId(reportDate);
   const selectedMonthLabel = MONTHS.find((month) => month.id === selectedMonth)?.label ?? '';
 
@@ -593,6 +712,14 @@ export default function App() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(schools));
   }, [schools]);
 
+  useEffect(
+    () => () => {
+      rivalResponseTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      rivalResponseTimeoutsRef.current = [];
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!supabase) return undefined;
 
@@ -606,20 +733,17 @@ export default function App() {
 
         if (error) {
           setSyncStatus('공유 DB 불러오기 실패');
-          setIsSharedDataReady(true);
           return;
         }
 
         if (!data || data.length === 0) {
           persistSchools(INITIAL_SCHOOLS);
           setSyncStatus('공유 DB 초기화 중');
-          setIsSharedDataReady(true);
           return;
         }
 
         setSchools((prev) => mergeRemoteSchoolRows(prev, data as SchoolCountRow[]));
         setSyncStatus('실시간 공유 중');
-        setIsSharedDataReady(true);
       });
 
     const channel = supabase
@@ -660,67 +784,6 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!isSharedDataReady) return;
-
-    const now = Date.now();
-    const lastUpdatedAt = Number(window.localStorage.getItem(RIVAL_UPDATE_META_KEY) ?? now);
-    const elapsedMinutes = Math.max(0, Math.floor((now - lastUpdatedAt) / 60000));
-    const catchUpEvents = Math.min(18, Math.floor(elapsedMinutes / 75));
-
-    if (catchUpEvents > 0) {
-      setSchools((prev) => {
-        const next = applyRivalGrowth(prev, selectedMonth, catchUpEvents);
-        persistSchools(next);
-        return next;
-      });
-    }
-
-    window.localStorage.setItem(RIVAL_UPDATE_META_KEY, String(now));
-  }, [isSharedDataReady, selectedMonth]);
-
-  useEffect(() => {
-    if (!isSharedDataReady) return undefined;
-
-    let timeoutId: number;
-
-    const scheduleNextRivalUpdate = () => {
-      const delay = 18000 + Math.floor(Math.random() * 26000);
-
-      timeoutId = window.setTimeout(() => {
-        setSchools((prev) => {
-          const before = new Map(
-            prev.map((school) => [
-              school.id,
-              getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate),
-            ]),
-          );
-          const next = applyRivalGrowth(prev, selectedMonth, 1);
-          const changedSchools = next.filter((school) => {
-            const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
-            return school.id !== OUR_SCHOOL_ID && currentCount > (before.get(school.id) ?? 0);
-          });
-
-          if (changedSchools.length > 0) {
-            const sample = changedSchools[Math.floor(Math.random() * changedSchools.length)];
-            const currentCount = getMonthToDateCount(sample.monthlyLending[selectedMonth] ?? 0, reportDate);
-            setRivalNotice(`${sample.name} ${currentCount.toLocaleString()}권으로 상승`);
-            window.localStorage.setItem(RIVAL_UPDATE_META_KEY, String(Date.now()));
-          }
-
-          persistSchools(next);
-          return next;
-        });
-
-        scheduleNextRivalUpdate();
-      }, delay);
-    };
-
-    scheduleNextRivalUpdate();
-
-    return () => window.clearTimeout(timeoutId);
-  }, [isSharedDataReady, selectedMonth]);
-
   const monthlySchools = useMemo<MonthlySchool[]>(
     () =>
       schools.map((school) => ({
@@ -755,83 +818,126 @@ export default function App() {
     [monthlySchools],
   );
 
-  const totalLendingCount = monthlySchools.reduce((total, school) => total + school.lendingCount, 0);
   const ourSchool = monthlySchools.find((school) => school.id === OUR_SCHOOL_ID);
   const ourSchoolRank = rankedSchools.find((school) => school.id === ourSchool?.id)?.rank ?? 0;
   const ourSchoolCount = ourSchool?.lendingCount ?? 0;
-  const nextRankSchool = rankedSchools.find(
-    (school) => school.id !== OUR_SCHOOL_ID && school.lendingCount > ourSchoolCount,
-  );
-  const booksToNextRank = nextRankSchool ? nextRankSchool.lendingCount - ourSchoolCount + 1 : 0;
 
-  const updateLendingCount = (id: string, newCount: number) => {
-    setSchools((prev) => {
-      const next = prev.map((school) =>
-        school.id === id ? updateSchoolMonthToDateCount(school, selectedMonth, newCount) : school,
-      );
-      persistSchools(next);
-      return next;
-    });
+  const scheduleRivalResponse = (delayOffset = 0) => {
+    const now = Date.now();
+    recentLoanTimestampsRef.current = [...recentLoanTimestampsRef.current, now].filter(
+      (timestamp) => now - timestamp <= RECENT_LOAN_WINDOW_MS,
+    );
+
+    const recentLoanCount = recentLoanTimestampsRef.current.length;
+    const responseIntensity = Math.min(1.45, 0.85 + recentLoanCount * 0.12);
+    const delay = delayOffset + Math.max(9000, 18000 + Math.floor(Math.random() * 42000) - recentLoanCount * 1800);
+
+    const timeoutId = window.setTimeout(() => {
+      setSchools((prev) => {
+        const next = applyRivalGrowth(prev, selectedMonth, 1, responseIntensity);
+        if (!hasMonthToDateCountChanges(prev, next, selectedMonth)) return prev;
+
+        persistSchools(next);
+        return next;
+      });
+
+      rivalResponseTimeoutsRef.current = rivalResponseTimeoutsRef.current.filter((id) => id !== timeoutId);
+    }, delay);
+
+    rivalResponseTimeoutsRef.current = [...rivalResponseTimeoutsRef.current, timeoutId];
   };
 
-  const addOurSchoolLoans = (amount: number) => {
-    const safeAmount = Math.max(1, amount);
+  const updateLendingCount = (id: string, newCount: number) => {
+    const previousOurSchool = schools.find((school) => school.id === OUR_SCHOOL_ID);
+    const previousOurCount = previousOurSchool
+      ? getMonthToDateCount(previousOurSchool.monthlyLending[selectedMonth] ?? 0, reportDate)
+      : 0;
+    const next = schools.map((school) =>
+      school.id === id ? updateSchoolMonthToDateCount(school, selectedMonth, newCount) : school,
+    );
+    const ourIncrease = id === OUR_SCHOOL_ID ? Math.max(0, newCount - previousOurCount) : 0;
+
+    setSchools(next);
+    persistSchools(next);
+
+    if (ourIncrease > 0) {
+      Array.from({ length: Math.min(ourIncrease, 5) }).forEach((_, index) => {
+        scheduleRivalResponse(index * 18000);
+      });
+    }
+  };
+
+  const addOurSchoolLoan = async () => {
+    const author = bookAuthor.trim();
+    const title = bookTitle.trim();
+    if (!title || !author) return;
+
+    setLoanSubmitError('');
+
+    const { error } = await insertBookLoan({
+      school_id: OUR_SCHOOL_ID,
+      title,
+      author,
+    });
+
+    if (error) {
+      setLoanSubmitError('책 등록 기록 저장에 실패했습니다.');
+      return;
+    }
 
     setSchools((prev) => {
       const next = prev.map((school) => {
         if (school.id !== OUR_SCHOOL_ID) return school;
 
         const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
-        return updateSchoolMonthToDateCount(school, selectedMonth, currentCount + safeAmount);
+        return updateSchoolMonthToDateCount(school, selectedMonth, currentCount + 1);
       });
       persistSchools(next);
       return next;
     });
-    setLoanAddAmount(1);
+    scheduleRivalResponse();
+    setBookAuthor('');
+    setBookTitle('');
+    setIsBookLoanModalOpen(false);
   };
 
   return (
     <main className="min-h-screen overflow-y-auto bg-white font-sans text-[#0a1317] xl:h-screen xl:overflow-hidden">
       <header className="border-b border-[rgba(10,19,23,0.08)] bg-white px-4 py-4 md:px-6 xl:px-10">
-        <div className="mx-auto flex max-w-[1680px] flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-4">
-            <div className="grid h-14 w-14 place-items-center rounded-full bg-[#0a1317] text-white">
+        <div className="mx-auto flex max-w-[1680px] items-center">
+          <div className="flex min-w-0 items-center gap-4">
+            <button
+              type="button"
+              onClick={() => setIsSettingsOpen(true)}
+              aria-label="데이터 수정"
+              title="데이터 수정"
+              className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-[#0a1317] text-white transition hover:bg-[#0143b5] active:scale-95"
+            >
               <BookOpenText size={30} />
-            </div>
+            </button>
             <div>
               <h1 className="text-2xl font-medium leading-tight text-[#0a1317] md:text-3xl">
                 전국 3학년 3반 도서관 대출 현황 대항전
               </h1>
             </div>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-5 md:justify-end">
-            <div className="grid grid-cols-2 gap-5 text-right">
-              <div>
-                <p className="text-xs font-semibold uppercase text-[#637381]">5월 누적 대출 권수</p>
-                <p className="text-2xl font-black text-[#0143b5]">{totalLendingCount.toLocaleString()}권</p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase text-[#637381]">참여 학교</p>
-                <p className="text-2xl font-black text-[#0a1317]">{schools.length}곳</p>
-              </div>
-            </div>
-            <PillButton
-              onClick={() => setIsSettingsOpen(true)}
-              className="border border-[rgba(10,19,23,0.12)] bg-white text-[#0a1317] hover:bg-[#f5f6f7]"
-            >
-              <Settings2 size={18} />
-              데이터 수정
-            </PillButton>
-            <span className="rounded-[100px] bg-[#eef5ff] px-4 py-2 text-xs font-black text-[#0143b5] ring-1 ring-[rgba(1,67,181,0.14)]">
-              {syncStatus}
-            </span>
-          </div>
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1680px] grid-cols-1 gap-4 px-4 py-5 md:px-6 xl:h-[calc(100vh-93px)] xl:grid-cols-[minmax(0,1fr)_320px] xl:px-10">
+      <div className="mx-auto grid max-w-[1680px] grid-cols-1 gap-4 px-4 py-5 md:px-6 xl:h-[calc(100vh-93px)] xl:grid-cols-[minmax(0,1fr)_380px] xl:px-10">
         <Card className="flex min-h-[720px] flex-col p-3 xl:min-h-0">
           <div className="relative min-h-0 flex-1 rounded-[32px] bg-[#f5f6f7] p-1">
+            <span
+              aria-label={syncStatus}
+              title={syncStatus}
+              className={`absolute right-5 top-5 z-10 grid h-9 w-9 place-items-center rounded-full opacity-45 ring-1 ${
+                syncStatus === '실시간 공유 중'
+                  ? 'bg-white/70 text-[#5d84bd] ring-[rgba(93,132,189,0.16)]'
+                  : 'bg-white/70 text-[#8c9aa5] ring-[rgba(10,19,23,0.08)]'
+              }`}
+            >
+              {syncStatus === '실시간 공유 중' ? <Cloud size={18} /> : <CloudOff size={18} />}
+            </span>
             <KoreaMap
               schools={sortedSchools}
               regionalCounts={regionalCounts}
@@ -862,9 +968,20 @@ export default function App() {
 
         <aside className="min-h-0 space-y-4">
           <Card className="p-4">
-            <div className="mb-3">
-              <h2 className="text-xl font-medium text-[#0a1317]">우리 학교 현황</h2>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setLoanSubmitError('');
+                setIsBookLoanModalOpen(true);
+              }}
+              className="inline-flex h-14 w-full items-center justify-center gap-2 rounded-[18px] bg-[#0143b5] px-4 text-base font-black text-white transition hover:bg-[#0064e0] active:scale-95"
+            >
+              <Plus size={20} />
+              등록하기
+            </button>
+          </Card>
+
+          <Card className="p-4">
             <div className="rounded-[20px] bg-[#f5f6f7] p-4">
               <div className="flex items-start justify-between gap-3">
                 <p className="min-w-0 text-sm font-bold text-[#465a69]">대구장동초등학교</p>
@@ -882,51 +999,6 @@ export default function App() {
               <p className="mt-3 text-sm font-semibold leading-5 text-[#637381]">
                 우리 반 누적 대출 권수
               </p>
-              {booksToNextRank > 0 ? (
-                <p className="mt-2 text-sm font-black leading-5 text-[#0143b5]">
-                  {nextRankSchool?.name}까지 {booksToNextRank.toLocaleString()}권
-                </p>
-              ) : (
-                <p className="mt-2 text-sm font-black leading-5 text-[#0143b5]">
-                  현재 1위를 지키는 중
-                </p>
-              )}
-            </div>
-            <div className="mt-3 rounded-[20px] border border-[rgba(1,67,181,0.14)] bg-[#eef5ff] p-4">
-              <label className="block text-sm font-black text-[#0a1317]" htmlFor="loan-add-amount">
-                대구장동초 대출 권수 추가
-              </label>
-              <div className="mt-3 grid grid-cols-[minmax(0,1fr)_48px_48px_48px] gap-2">
-                <input
-                  id="loan-add-amount"
-                  type="number"
-                  min={1}
-                  value={loanAddAmount}
-                  onChange={(event) =>
-                    setLoanAddAmount(Math.max(1, Number.parseInt(event.target.value, 10) || 1))
-                  }
-                  className="h-12 min-w-0 rounded-xl border border-[rgba(10,19,23,0.12)] bg-white px-3 text-right text-xl font-black text-[#0a1317] outline-none transition focus:border-2 focus:border-[#0866ff]"
-                />
-                {[1, 3, 5].map((amount) => (
-                  <button
-                    key={amount}
-                    type="button"
-                    onClick={() => addOurSchoolLoans(amount)}
-                    className="grid h-12 place-items-center rounded-xl bg-white text-sm font-black text-[#0143b5] ring-1 ring-[rgba(1,67,181,0.18)] transition hover:bg-[#dceaff] active:scale-95"
-                    aria-label={`${amount}권 추가`}
-                  >
-                    +{amount}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => addOurSchoolLoans(loanAddAmount)}
-                className="mt-3 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0143b5] px-4 text-sm font-black text-white transition hover:bg-[#0064e0] active:scale-95"
-              >
-                <Plus size={18} />
-                입력한 권수 추가
-              </button>
             </div>
           </Card>
 
@@ -935,9 +1007,6 @@ export default function App() {
               <Award className="text-[#0143b5]" />
               {selectedMonthLabel} 독서 랭킹
             </h2>
-            <div className="mb-4 rounded-2xl bg-[#f5f6f7] px-4 py-3 text-xs font-black leading-5 text-[#465a69]">
-              {rivalNotice}
-            </div>
             <ol className="space-y-3">
               {rankedSchools.slice(0, 5).map((school) => {
                 const isOurSchool = school.id === ourSchool?.id;
@@ -951,18 +1020,16 @@ export default function App() {
                         : 'bg-[#f5f6f7]'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3">
                       <span className="min-w-0 truncate text-sm font-bold text-[#0a1317]">
                         {getRankLabel(school.rank)} {school.name}
                       </span>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <span className="text-sm font-black text-[#0a1317]">
-                          {school.lendingCount.toLocaleString()}권
-                        </span>
-                        <span className="rounded-[50px] border border-[#2f80d1] px-3 py-1 text-sm font-black text-[#005eb8]">
-                          {regionShortNames[school.region] ?? school.region}
-                        </span>
-                      </div>
+                      <span className="text-sm font-black text-[#0a1317]">
+                        {school.lendingCount.toLocaleString()}권
+                      </span>
+                      <span className="rounded-[50px] border border-[#2f80d1] px-3 py-1 text-sm font-black text-[#005eb8]">
+                        {regionShortNames[school.region] ?? school.region}
+                      </span>
                     </div>
                   </li>
                 );
@@ -978,6 +1045,23 @@ export default function App() {
           selectedMonth={selectedMonth}
           onClose={() => setIsSettingsOpen(false)}
           onUpdate={updateLendingCount}
+        />
+      )}
+
+      {isBookLoanModalOpen && (
+        <BookLoanModal
+          bookAuthor={bookAuthor}
+          errorMessage={loanSubmitError}
+          bookTitle={bookTitle}
+          onBookAuthorChange={setBookAuthor}
+          onBookTitleChange={setBookTitle}
+          onClose={() => {
+            setBookAuthor('');
+            setBookTitle('');
+            setLoanSubmitError('');
+            setIsBookLoanModalOpen(false);
+          }}
+          onSubmit={addOurSchoolLoan}
         />
       )}
     </main>

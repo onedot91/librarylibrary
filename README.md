@@ -24,3 +24,5 @@ View your app in AI Studio: https://ai.studio/apps/89fc2530-4852-4ce0-a23d-d46f6
    `npm run dev`
 
 If Supabase variables are missing, the app falls back to browser-local storage and will not sync across devices.
+
+The Supabase schema stores shared school counts in `school_lending_counts` and individual Daegu Jangdong book registrations in `book_loans`.

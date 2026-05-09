@@ -7,8 +7,15 @@ export type SchoolCountRow = {
   updated_at?: string;
 };
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+export type BookLoanInsert = {
+  school_id: string;
+  title: string;
+  author: string;
+};
+
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const supabaseUrl = rawSupabaseUrl?.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '');
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
@@ -28,3 +35,8 @@ export const toSchoolCountRows = (schools: School[]): SchoolCountRow[] =>
     monthly_lending: school.monthlyLending,
   }));
 
+export const insertBookLoan = (loan: BookLoanInsert) => {
+  if (!supabase) return Promise.resolve({ error: null });
+
+  return supabase.from('book_loans').insert(loan);
+};
