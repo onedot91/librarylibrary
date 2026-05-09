@@ -22,6 +22,14 @@ const OUR_SCHOOL_ID = 'daegu';
 const STORAGE_KEY = 'jangdong-library-schools-v1';
 const RECENT_LOAN_WINDOW_MS = 10 * 60 * 1000;
 
+const getBookLoanErrorMessage = (error: { code?: string; message?: string }) => {
+  if (error.code === 'PGRST205' || error.message?.includes("Could not find the table 'public.book_loans'")) {
+    return 'Supabase에 book_loans 테이블이 없습니다. supabase-schema.sql을 먼저 실행해주세요.';
+  }
+
+  return '책 등록 기록 저장에 실패했습니다.';
+};
+
 type RegionProperties = {
   name?: string;
   name_eng?: string;
@@ -935,7 +943,8 @@ export default function App() {
     });
 
     if (error) {
-      setLoanSubmitError('책 등록 기록 저장에 실패했습니다.');
+      console.error('Book loan insert failed:', error);
+      setLoanSubmitError(getBookLoanErrorMessage(error));
       return;
     }
 
