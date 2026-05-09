@@ -1,0 +1,41 @@
+import { Region, School } from './types';
+
+export const REGIONS: Region[] = [
+  { id: 'seoul', name: '서울특별시' },
+  { id: 'busan', name: '부산광역시' },
+  { id: 'daegu', name: '대구광역시' },
+  { id: 'incheon', name: '인천광역시' },
+  { id: 'gwangju', name: '광주광역시' },
+  { id: 'daejeon', name: '대전광역시' },
+  { id: 'ulsan', name: '울산광역시' },
+  { id: 'sejong', name: '세종특별자치시' },
+  { id: 'gyeonggi', name: '경기도' },
+  { id: 'gangwon', name: '강원특별자치도' },
+  { id: 'chungbuk', name: '충청북도' },
+  { id: 'chungnam', name: '충청남도' },
+  { id: 'jeonbuk', name: '전북특별자치도' },
+  { id: 'jeonnam', name: '전라남도' },
+  { id: 'gyeongbuk', name: '경상북도' },
+  { id: 'gyeongnam', name: '경상남도' },
+  { id: 'jeju', name: '제주특별자치도' },
+];
+
+export const INITIAL_SCHOOLS: School[] = [
+  { id: 'seoul', name: '서울햇살초등학교', region: 'seoul', lendingCount: 450 },
+  { id: 'busan', name: '부산바다초등학교', region: 'busan', lendingCount: 300 },
+  { id: 'daegu', name: '대구꿈초등학교', region: 'daegu', lendingCount: 250 },
+  { id: 'incheon', name: '인천하늘초등학교', region: 'incheon', lendingCount: 280 },
+  { id: 'gwangju', name: '광주빛초등학교', region: 'gwangju', lendingCount: 220 },
+  { id: 'daejeon', name: '대전과학초등학교', region: 'daejeon', lendingCount: 260 },
+  { id: 'ulsan', name: '울산산업초등학교', region: 'ulsan', lendingCount: 230 },
+  { id: 'sejong', name: '세종정부초등학교', region: 'sejong', lendingCount: 320 },
+  { id: 'gyeonggi', name: '경기푸른들초등학교', region: 'gyeonggi', lendingCount: 400 },
+  { id: 'gangwon', name: '강원산골초등학교', region: 'gangwon', lendingCount: 150 },
+  { id: 'chungbuk', name: '충북농촌초등학교', region: 'chungbuk', lendingCount: 180 },
+  { id: 'chungnam', name: '충남들판초등학교', region: 'chungnam', lendingCount: 190 },
+  { id: 'jeonbuk', name: '전북역사초등학교', region: 'jeonbuk', lendingCount: 200 },
+  { id: 'jeonnam', name: '전남섬초등학교', region: 'jeonnam', lendingCount: 160 },
+  { id: 'gyeongbuk', name: '경북문화초등학교', region: 'gyeongbuk', lendingCount: 210 },
+  { id: 'gyeongnam', name: '경남기술초등학교', region: 'gyeongnam', lendingCount: 240 },
+  { id: 'jeju', name: '제주바람초등학교', region: 'jeju', lendingCount: 170 },
+];

@@ -1,0 +1,6 @@
+{
+  "name": "Elementary School Library Analytics",
+  "description": "Interactive dashboard to compare 3rd grade student library book lending counts across different elementary schools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
