@@ -5,12 +5,16 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { geoMercator, geoPath } from 'd3-geo';
-import { Award, BookOpenText, Settings2, X } from 'lucide-react';
+import { Award, BookOpenText, Plus, Settings2, X } from 'lucide-react';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { INITIAL_SCHOOLS, MONTHS, REGIONS } from './constants';
+import { isSupabaseConfigured, supabase, toSchoolCountRows, type SchoolCountRow } from './supabase';
 import { MonthlySchool, School } from './types';
 
 const geoUrl = '/maps/sido.geojson';
+const OUR_SCHOOL_ID = 'daegu';
+const STORAGE_KEY = 'jangdong-library-schools-v1';
+const RIVAL_UPDATE_META_KEY = 'jangdong-library-rival-meta-v1';
 
 type RegionProperties = {
   name?: string;
@@ -93,6 +97,86 @@ const getDaysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMont
 
 const getMonthToDateCount = (monthlyCount: number, date: Date) =>
   Math.round((monthlyCount * date.getDate()) / getDaysInMonth(date));
+
+const getEstimatedMonthlyCount = (monthToDateCount: number, date: Date) =>
+  Math.round((Math.max(0, monthToDateCount) * getDaysInMonth(date)) / date.getDate());
+
+const updateSchoolMonthToDateCount = (
+  school: School,
+  selectedMonth: string,
+  count: number,
+): School => ({
+  ...school,
+  monthlyLending: {
+    ...school.monthlyLending,
+    [selectedMonth]: getEstimatedMonthlyCount(count, reportDate),
+  },
+});
+
+const getStoredSchools = () => {
+  if (typeof window === 'undefined') return INITIAL_SCHOOLS;
+
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (!saved) return INITIAL_SCHOOLS;
+
+    const parsed = JSON.parse(saved) as School[];
+    const savedById = new Map(parsed.map((school) => [school.id, school]));
+
+    return INITIAL_SCHOOLS.map((school) => ({
+      ...school,
+      monthlyLending: savedById.get(school.id)?.monthlyLending ?? school.monthlyLending,
+    }));
+  } catch {
+    return INITIAL_SCHOOLS;
+  }
+};
+
+const getRivalIncrement = (school: School, ourCount: number, currentCount: number) => {
+  const pressureBonus = currentCount <= ourCount + 4 ? 0.35 : 0;
+  const frontRunnerBonus = currentCount >= ourCount + 8 ? 0.12 : 0;
+  const baseChance = 0.2 + pressureBonus + frontRunnerBonus;
+
+  if (Math.random() > baseChance) return 0;
+  if (school.region === 'seoul' || school.region === 'gyeonggi' || school.region === 'sejong') {
+    return Math.random() > 0.82 ? 2 : 1;
+  }
+  return Math.random() > 0.92 ? 2 : 1;
+};
+
+const applyRivalGrowth = (schools: School[], selectedMonth: string, eventCount: number) => {
+  if (eventCount <= 0) return schools;
+
+  let nextSchools = schools;
+
+  for (let i = 0; i < eventCount; i += 1) {
+    const ourSchool = nextSchools.find((school) => school.id === OUR_SCHOOL_ID);
+    const ourCount = ourSchool
+      ? getMonthToDateCount(ourSchool.monthlyLending[selectedMonth] ?? 0, reportDate)
+      : 0;
+
+    nextSchools = nextSchools.map((school) => {
+      if (school.id === OUR_SCHOOL_ID) return school;
+
+      const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
+      const increment = getRivalIncrement(school, ourCount, currentCount);
+      if (increment === 0) return school;
+
+      return updateSchoolMonthToDateCount(school, selectedMonth, currentCount + increment);
+    });
+  }
+
+  return nextSchools;
+};
+
+const mergeRemoteSchoolRows = (schools: School[], rows: SchoolCountRow[]) => {
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+
+  return schools.map((school) => ({
+    ...school,
+    monthlyLending: rowsById.get(school.id)?.monthly_lending ?? school.monthlyLending,
+  }));
+};
 
 const getRegionColor = (count: number) => {
   if (count >= 17) return '#0143b5';
@@ -481,10 +565,161 @@ const DataSettingsModal = ({
 );
 
 export default function App() {
-  const [schools, setSchools] = useState<School[]>(INITIAL_SCHOOLS);
+  const [schools, setSchools] = useState<School[]>(getStoredSchools);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [loanAddAmount, setLoanAddAmount] = useState(1);
+  const [rivalNotice, setRivalNotice] = useState('다른 학교도 조금씩 기록을 따라오고 있어요.');
+  const [syncStatus, setSyncStatus] = useState(
+    isSupabaseConfigured ? '공유 DB 연결 중' : '로컬 저장 모드',
+  );
+  const [isSharedDataReady, setIsSharedDataReady] = useState(!isSupabaseConfigured);
   const selectedMonth = getMonthId(reportDate);
   const selectedMonthLabel = MONTHS.find((month) => month.id === selectedMonth)?.label ?? '';
+
+  const persistSchools = (nextSchools: School[]) => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSchools));
+
+    if (!supabase) return;
+
+    supabase
+      .from('school_lending_counts')
+      .upsert(toSchoolCountRows(nextSchools), { onConflict: 'id' })
+      .then(({ error }) => {
+        setSyncStatus(error ? '공유 DB 저장 실패' : '실시간 공유 중');
+      });
+  };
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(schools));
+  }, [schools]);
+
+  useEffect(() => {
+    if (!supabase) return undefined;
+
+    let ignore = false;
+
+    supabase
+      .from('school_lending_counts')
+      .select('id, monthly_lending, updated_at')
+      .then(({ data, error }) => {
+        if (ignore) return;
+
+        if (error) {
+          setSyncStatus('공유 DB 불러오기 실패');
+          setIsSharedDataReady(true);
+          return;
+        }
+
+        if (!data || data.length === 0) {
+          persistSchools(INITIAL_SCHOOLS);
+          setSyncStatus('공유 DB 초기화 중');
+          setIsSharedDataReady(true);
+          return;
+        }
+
+        setSchools((prev) => mergeRemoteSchoolRows(prev, data as SchoolCountRow[]));
+        setSyncStatus('실시간 공유 중');
+        setIsSharedDataReady(true);
+      });
+
+    const channel = supabase
+      .channel('school-lending-counts')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'school_lending_counts',
+        },
+        (payload) => {
+          const row = payload.new as SchoolCountRow | null;
+          if (!row?.id) return;
+
+          setSchools((prev) =>
+            prev.map((school) =>
+              school.id === row.id
+                ? {
+                    ...school,
+                    monthlyLending: row.monthly_lending,
+                  }
+                : school,
+            ),
+          );
+          setSyncStatus('실시간 공유 중');
+        },
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setSyncStatus('실시간 공유 중');
+        }
+      });
+
+    return () => {
+      ignore = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isSharedDataReady) return;
+
+    const now = Date.now();
+    const lastUpdatedAt = Number(window.localStorage.getItem(RIVAL_UPDATE_META_KEY) ?? now);
+    const elapsedMinutes = Math.max(0, Math.floor((now - lastUpdatedAt) / 60000));
+    const catchUpEvents = Math.min(18, Math.floor(elapsedMinutes / 75));
+
+    if (catchUpEvents > 0) {
+      setSchools((prev) => {
+        const next = applyRivalGrowth(prev, selectedMonth, catchUpEvents);
+        persistSchools(next);
+        return next;
+      });
+    }
+
+    window.localStorage.setItem(RIVAL_UPDATE_META_KEY, String(now));
+  }, [isSharedDataReady, selectedMonth]);
+
+  useEffect(() => {
+    if (!isSharedDataReady) return undefined;
+
+    let timeoutId: number;
+
+    const scheduleNextRivalUpdate = () => {
+      const delay = 18000 + Math.floor(Math.random() * 26000);
+
+      timeoutId = window.setTimeout(() => {
+        setSchools((prev) => {
+          const before = new Map(
+            prev.map((school) => [
+              school.id,
+              getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate),
+            ]),
+          );
+          const next = applyRivalGrowth(prev, selectedMonth, 1);
+          const changedSchools = next.filter((school) => {
+            const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
+            return school.id !== OUR_SCHOOL_ID && currentCount > (before.get(school.id) ?? 0);
+          });
+
+          if (changedSchools.length > 0) {
+            const sample = changedSchools[Math.floor(Math.random() * changedSchools.length)];
+            const currentCount = getMonthToDateCount(sample.monthlyLending[selectedMonth] ?? 0, reportDate);
+            setRivalNotice(`${sample.name} ${currentCount.toLocaleString()}권으로 상승`);
+            window.localStorage.setItem(RIVAL_UPDATE_META_KEY, String(Date.now()));
+          }
+
+          persistSchools(next);
+          return next;
+        });
+
+        scheduleNextRivalUpdate();
+      }, delay);
+    };
+
+    scheduleNextRivalUpdate();
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isSharedDataReady, selectedMonth]);
 
   const monthlySchools = useMemo<MonthlySchool[]>(
     () =>
@@ -521,26 +756,38 @@ export default function App() {
   );
 
   const totalLendingCount = monthlySchools.reduce((total, school) => total + school.lendingCount, 0);
-  const ourSchool = monthlySchools.find((school) => school.name === '대구장동초등학교');
+  const ourSchool = monthlySchools.find((school) => school.id === OUR_SCHOOL_ID);
   const ourSchoolRank = rankedSchools.find((school) => school.id === ourSchool?.id)?.rank ?? 0;
   const ourSchoolCount = ourSchool?.lendingCount ?? 0;
+  const nextRankSchool = rankedSchools.find(
+    (school) => school.id !== OUR_SCHOOL_ID && school.lendingCount > ourSchoolCount,
+  );
+  const booksToNextRank = nextRankSchool ? nextRankSchool.lendingCount - ourSchoolCount + 1 : 0;
 
   const updateLendingCount = (id: string, newCount: number) => {
-    const estimatedMonthlyCount = Math.round((Math.max(0, newCount) * getDaysInMonth(reportDate)) / reportDate.getDate());
+    setSchools((prev) => {
+      const next = prev.map((school) =>
+        school.id === id ? updateSchoolMonthToDateCount(school, selectedMonth, newCount) : school,
+      );
+      persistSchools(next);
+      return next;
+    });
+  };
 
-    setSchools((prev) =>
-      prev.map((school) =>
-        school.id === id
-          ? {
-              ...school,
-              monthlyLending: {
-                ...school.monthlyLending,
-                [selectedMonth]: estimatedMonthlyCount,
-              },
-            }
-          : school,
-      ),
-    );
+  const addOurSchoolLoans = (amount: number) => {
+    const safeAmount = Math.max(1, amount);
+
+    setSchools((prev) => {
+      const next = prev.map((school) => {
+        if (school.id !== OUR_SCHOOL_ID) return school;
+
+        const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
+        return updateSchoolMonthToDateCount(school, selectedMonth, currentCount + safeAmount);
+      });
+      persistSchools(next);
+      return next;
+    });
+    setLoanAddAmount(1);
   };
 
   return (
@@ -575,6 +822,9 @@ export default function App() {
               <Settings2 size={18} />
               데이터 수정
             </PillButton>
+            <span className="rounded-[100px] bg-[#eef5ff] px-4 py-2 text-xs font-black text-[#0143b5] ring-1 ring-[rgba(1,67,181,0.14)]">
+              {syncStatus}
+            </span>
           </div>
         </div>
       </header>
@@ -632,6 +882,51 @@ export default function App() {
               <p className="mt-3 text-sm font-semibold leading-5 text-[#637381]">
                 우리 반 누적 대출 권수
               </p>
+              {booksToNextRank > 0 ? (
+                <p className="mt-2 text-sm font-black leading-5 text-[#0143b5]">
+                  {nextRankSchool?.name}까지 {booksToNextRank.toLocaleString()}권
+                </p>
+              ) : (
+                <p className="mt-2 text-sm font-black leading-5 text-[#0143b5]">
+                  현재 1위를 지키는 중
+                </p>
+              )}
+            </div>
+            <div className="mt-3 rounded-[20px] border border-[rgba(1,67,181,0.14)] bg-[#eef5ff] p-4">
+              <label className="block text-sm font-black text-[#0a1317]" htmlFor="loan-add-amount">
+                대구장동초 대출 권수 추가
+              </label>
+              <div className="mt-3 grid grid-cols-[minmax(0,1fr)_48px_48px_48px] gap-2">
+                <input
+                  id="loan-add-amount"
+                  type="number"
+                  min={1}
+                  value={loanAddAmount}
+                  onChange={(event) =>
+                    setLoanAddAmount(Math.max(1, Number.parseInt(event.target.value, 10) || 1))
+                  }
+                  className="h-12 min-w-0 rounded-xl border border-[rgba(10,19,23,0.12)] bg-white px-3 text-right text-xl font-black text-[#0a1317] outline-none transition focus:border-2 focus:border-[#0866ff]"
+                />
+                {[1, 3, 5].map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => addOurSchoolLoans(amount)}
+                    className="grid h-12 place-items-center rounded-xl bg-white text-sm font-black text-[#0143b5] ring-1 ring-[rgba(1,67,181,0.18)] transition hover:bg-[#dceaff] active:scale-95"
+                    aria-label={`${amount}권 추가`}
+                  >
+                    +{amount}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => addOurSchoolLoans(loanAddAmount)}
+                className="mt-3 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0143b5] px-4 text-sm font-black text-white transition hover:bg-[#0064e0] active:scale-95"
+              >
+                <Plus size={18} />
+                입력한 권수 추가
+              </button>
             </div>
           </Card>
 
@@ -640,6 +935,9 @@ export default function App() {
               <Award className="text-[#0143b5]" />
               {selectedMonthLabel} 독서 랭킹
             </h2>
+            <div className="mb-4 rounded-2xl bg-[#f5f6f7] px-4 py-3 text-xs font-black leading-5 text-[#465a69]">
+              {rivalNotice}
+            </div>
             <ol className="space-y-3">
               {rankedSchools.slice(0, 5).map((school) => {
                 const isOurSchool = school.id === ourSchool?.id;
@@ -658,6 +956,9 @@ export default function App() {
                         {getRankLabel(school.rank)} {school.name}
                       </span>
                       <div className="flex shrink-0 items-center gap-2">
+                        <span className="text-sm font-black text-[#0a1317]">
+                          {school.lendingCount.toLocaleString()}권
+                        </span>
                         <span className="rounded-[50px] border border-[#2f80d1] px-3 py-1 text-sm font-black text-[#005eb8]">
                           {regionShortNames[school.region] ?? school.region}
                         </span>
