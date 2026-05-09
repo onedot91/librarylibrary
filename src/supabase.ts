@@ -60,3 +60,9 @@ export const fetchBookLoans = (schoolId: string) => {
     .eq('school_id', schoolId)
     .order('created_at', { ascending: false });
 };
+
+export const deleteBookLoan = (id: string) => {
+  if (!supabase) return Promise.resolve({ error: null });
+
+  return supabase.from('book_loans').delete().eq('id', id);
+};

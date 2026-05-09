@@ -5,10 +5,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { geoMercator, geoPath } from 'd3-geo';
-import { ArrowDownRight, ArrowUpRight, Award, BookOpenText, Cloud, CloudOff, Minus, Plus, X } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Award, BookOpenText, Cloud, CloudOff, Minus, Plus, Trash2, X } from 'lucide-react';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { INITIAL_SCHOOLS, MONTHS, REGIONS } from './constants';
 import {
+  deleteBookLoan,
   fetchBookLoans,
   insertBookLoan,
   isSupabaseConfigured,
@@ -347,7 +348,6 @@ const KoreaMap = ({
   const [features, setFeatures] = useState<RegionFeature[]>([]);
   const [mapError, setMapError] = useState(false);
   const [hoveredRegionId, setHoveredRegionId] = useState<string | null>(null);
-  const [activeRegionId, setActiveRegionId] = useState<string | null>(null);
   const displayFeatures = useMemo(() => features.map(simplifyRegionFeature), [features]);
   const topRegionIds = useMemo(
     () =>
@@ -373,7 +373,7 @@ const KoreaMap = ({
       ),
     [displayFeatures],
   );
-  const selectedRegionId = hoveredRegionId ?? activeRegionId;
+  const selectedRegionId = hoveredRegionId;
   const isGyeongbukSelected = selectedRegionId === 'gyeongbuk';
 
   useEffect(() => {
@@ -430,6 +430,7 @@ const KoreaMap = ({
         role="img"
         aria-label="대한민국 지역별 도서 대출 현황"
         className="h-full w-full"
+        onMouseLeave={() => setHoveredRegionId(null)}
       >
         <g>
         {displayFeatures.map((geo) => {
@@ -451,7 +452,6 @@ const KoreaMap = ({
               className="cursor-pointer transition-colors duration-200"
               onMouseEnter={() => setHoveredRegionId(regionId)}
               onMouseLeave={() => setHoveredRegionId(null)}
-              onClick={() => setActiveRegionId((current) => (current === regionId ? null : regionId))}
             />
           );
         })}
@@ -477,7 +477,6 @@ const KoreaMap = ({
             className="transition-colors duration-200"
             onMouseEnter={() => setHoveredRegionId('gyeongbuk')}
             onMouseLeave={() => setHoveredRegionId(null)}
-            onClick={() => setActiveRegionId((current) => (current === 'gyeongbuk' ? null : 'gyeongbuk'))}
           />
           <path
             d={`M ${dokdoPoint[0] + 14} ${dokdoPoint[1] + 1}
@@ -495,7 +494,6 @@ const KoreaMap = ({
             className="transition-colors duration-200"
             onMouseEnter={() => setHoveredRegionId('gyeongbuk')}
             onMouseLeave={() => setHoveredRegionId(null)}
-            onClick={() => setActiveRegionId((current) => (current === 'gyeongbuk' ? null : 'gyeongbuk'))}
           />
         </g>
         )}
@@ -613,6 +611,7 @@ const DataSettingsModal = ({
   schools,
   selectedMonth,
   onClose,
+  onDeleteBookLoan,
   onUpdate,
 }: {
   bookLoans: BookLoanRow[];
@@ -620,6 +619,7 @@ const DataSettingsModal = ({
   schools: School[];
   selectedMonth: string;
   onClose: () => void;
+  onDeleteBookLoan: (loan: BookLoanRow) => void;
   onUpdate: (id: string, count: number) => void;
 }) => {
   const [activeTab, setActiveTab] = useState<'edit' | 'review'>('edit');
@@ -731,8 +731,21 @@ const DataSettingsModal = ({
                         key={loan.id}
                         className="rounded-xl border border-[rgba(10,19,23,0.08)] bg-white px-3 py-3"
                       >
-                        <p className="truncate text-sm font-black text-[#0a1317]">{loan.title}</p>
-                        <p className="mt-1 truncate text-xs font-bold text-[#637381]">{loan.author}</p>
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="min-w-0">
+                            <p className="truncate text-sm font-black text-[#0a1317]">{loan.title}</p>
+                            <p className="mt-1 truncate text-xs font-bold text-[#637381]">{loan.author}</p>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteBookLoan(loan)}
+                            aria-label={`${loan.title} 삭제`}
+                            title="삭제"
+                            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[#c62828] transition hover:bg-[#fff1f1] active:scale-95"
+                          >
+                            <Trash2 size={17} />
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -1100,6 +1113,30 @@ export default function App() {
     setIsBookLoanModalOpen(false);
   };
 
+  const removeOurSchoolLoan = async (loan: BookLoanRow) => {
+    setBookLoanReviewError('');
+
+    const { error } = await deleteBookLoan(loan.id);
+
+    if (error) {
+      console.error('Book loan delete failed:', error);
+      setBookLoanReviewError(getBookLoanErrorMessage(error));
+      return;
+    }
+
+    setBookLoans((prev) => prev.filter((item) => item.id !== loan.id));
+    setSchools((prev) => {
+      const next = prev.map((school) => {
+        if (school.id !== OUR_SCHOOL_ID) return school;
+
+        const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
+        return updateSchoolMonthToDateCount(school, selectedMonth, Math.max(0, currentCount - 1));
+      });
+      persistSchools(next);
+      return next;
+    });
+  };
+
   const handleSettingsIconClick = () => {
     settingsClickCountRef.current += 1;
 
@@ -1258,6 +1295,7 @@ export default function App() {
           schools={schools}
           selectedMonth={selectedMonth}
           onClose={() => setIsSettingsOpen(false)}
+          onDeleteBookLoan={removeOurSchoolLoan}
           onUpdate={updateLendingCount}
         />
       )}

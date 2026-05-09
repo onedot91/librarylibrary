@@ -102,6 +102,13 @@ with check (
   and length(trim(author)) > 0
 );
 
+drop policy if exists "Anyone can delete book loans" on public.book_loans;
+create policy "Anyone can delete book loans"
+on public.book_loans
+for delete
+to anon
+using (school_id = 'daegu');
+
 do $$
 begin
   if not exists (
