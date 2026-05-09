@@ -220,20 +220,52 @@ const applyRivalGrowth = (
       })
       .filter((rival) => rival.weight > 0);
 
-    const totalWeight = weightedRivals.reduce((total, rival) => total + rival.weight, 0);
-    let pick = Math.random() * totalWeight;
-    const selectedRival = weightedRivals.find((rival) => {
-      pick -= rival.weight;
-      return pick <= 0;
-    });
-
-    if (!selectedRival) continue;
-
-    nextSchools = nextSchools.map((school) =>
-      school.id === selectedRival.school.id
-        ? updateSchoolMonthToDateCount(school, selectedMonth, selectedRival.count + 1)
-        : school,
+    const responseCount = Math.min(
+      weightedRivals.length,
+      isOurSchoolLeading ? (Math.random() < 0.35 ? 3 : 2) : Math.random() < 0.3 ? 2 : 1,
     );
+    const selectedRivals = [];
+    let remainingRivals = weightedRivals;
+
+    for (let selectionIndex = 0; selectionIndex < responseCount; selectionIndex += 1) {
+      const totalWeight = remainingRivals.reduce((total, rival) => total + rival.weight, 0);
+      let pick = Math.random() * totalWeight;
+      const selectedRival = remainingRivals.find((rival) => {
+        pick -= rival.weight;
+        return pick <= 0;
+      });
+
+      if (!selectedRival) break;
+
+      selectedRivals.push(selectedRival);
+      remainingRivals = remainingRivals.filter((rival) => rival.school.id !== selectedRival.school.id);
+    }
+
+    if (selectedRivals.length === 0) continue;
+
+    const totalSchoolCount = rivals.length + 1;
+
+    selectedRivals.forEach((selectedRival) => {
+      const selectedRank =
+        [ourCount, ...rivals.map((rival) => rival.count)].filter((count) => count > selectedRival.count).length + 1;
+      const isLowerRankedRival = selectedRank >= Math.max(4, Math.ceil(totalSchoolCount * 0.6));
+      const boostRoll = Math.random();
+      let increment = 1;
+
+      if (isOurSchoolLeading && isLowerRankedRival) {
+        increment = boostRoll < 0.25 ? 3 : boostRoll < 0.7 ? 2 : 1;
+      } else if (isOurSchoolLeading) {
+        increment = boostRoll < 0.25 ? 2 : 1;
+      } else if (isLowerRankedRival) {
+        increment = boostRoll < 0.35 ? 2 : 1;
+      }
+
+      nextSchools = nextSchools.map((school) =>
+        school.id === selectedRival.school.id
+          ? updateSchoolMonthToDateCount(school, selectedMonth, selectedRival.count + increment)
+          : school,
+      );
+    });
   }
 
   return nextSchools;
@@ -1063,7 +1095,7 @@ export default function App() {
     setSchools(next);
     persistSchools(next);
 
-    if (ourIncrease > 0) {
+    if (!supabase && ourIncrease > 0) {
       Array.from({ length: Math.min(ourIncrease, 5) }).forEach((_, index) => {
         scheduleRivalResponse(index * 18000);
       });
@@ -1096,17 +1128,19 @@ export default function App() {
       setBookLoanReviewError('');
     }
 
-    setSchools((prev) => {
-      const next = prev.map((school) => {
-        if (school.id !== OUR_SCHOOL_ID) return school;
+    if (!supabase) {
+      setSchools((prev) => {
+        const next = prev.map((school) => {
+          if (school.id !== OUR_SCHOOL_ID) return school;
 
-        const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
-        return updateSchoolMonthToDateCount(school, selectedMonth, currentCount + 1);
+          const currentCount = getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate);
+          return updateSchoolMonthToDateCount(school, selectedMonth, currentCount + 1);
+        });
+        persistSchools(next);
+        return next;
       });
-      persistSchools(next);
-      return next;
-    });
-    scheduleRivalResponse();
+      scheduleRivalResponse();
+    }
     setBookAuthor('');
     setStudentNumber('');
     setBookTitle('');
