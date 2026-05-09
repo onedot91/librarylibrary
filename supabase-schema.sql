@@ -55,9 +55,12 @@ begin
       and tablename = 'school_lending_counts'
   ) then
     alter publication supabase_realtime add table public.school_lending_counts;
-  end if;
+end if;
 end;
 $$;
+
+drop function if exists public.apply_ambient_growth(text, integer, integer, integer, integer);
+drop table if exists public.ambient_growth_state;
 
 create table if not exists public.book_loans (
   id uuid primary key default gen_random_uuid(),

@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { geoMercator, geoPath } from 'd3-geo';
-import { Award, BookOpenText, Cloud, CloudOff, Plus, X } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Award, BookOpenText, Cloud, CloudOff, Minus, Plus, X } from 'lucide-react';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { INITIAL_SCHOOLS, MONTHS, REGIONS } from './constants';
 import {
@@ -94,7 +94,7 @@ const regionLabelAdjustments: Record<string, { dx: number; dy: number }> = {
 const projection = geoMercator().center([127.8, 36.15]).scale(6300).translate([390, 355]);
 const pathGenerator = geoPath(projection);
 const dokdoPoint = projection([131 + 52 / 60 + 2.5 / 3600, 37 + 14 / 60 + 28.7 / 3600]);
-const reportDate = new Date(2026, 4, 9);
+const reportDate = new Date();
 
 const getMonthId = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -242,6 +242,49 @@ const getRankLabel = (rank: number) => {
   if (rank === 2) return '🥈 2위';
   if (rank === 3) return '🥉 3위';
   return `🔹 ${rank}위`;
+};
+
+const getCompactSchoolName = (name: string) => name;
+
+const getPreviousDate = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1);
+
+const getRankedSchoolsByMonthDate = (schools: School[], monthId: string, date: Date) => {
+  const monthlySchools = schools.map((school) => ({
+    ...school,
+    lendingCount: getMonthToDateCount(school.monthlyLending[monthId] ?? 0, date),
+  }));
+  const sortedSchools = [...monthlySchools].sort((a, b) => b.lendingCount - a.lendingCount);
+
+  return sortedSchools.map((school) => ({
+    ...school,
+    rank: sortedSchools.filter((item) => item.lendingCount > school.lendingCount).length + 1,
+  }));
+};
+
+const RankTrendBadge = ({ change }: { change: number }) => {
+  if (change > 0) {
+    return (
+      <span className="inline-flex h-5 min-w-7 shrink-0 items-center justify-center gap-0.5 rounded-full bg-[#fff0ee] px-1.5 text-[10px] font-black leading-none text-[#d92d20] ring-1 ring-[#ffd0ca]">
+        <ArrowUpRight size={12} strokeWidth={3} />
+        {change}
+      </span>
+    );
+  }
+
+  if (change < 0) {
+    return (
+      <span className="inline-flex h-5 min-w-7 shrink-0 items-center justify-center gap-0.5 rounded-full bg-[#eef6ff] px-1.5 text-[10px] font-black leading-none text-[#0064d2] ring-1 ring-[#c7defc]">
+        <ArrowDownRight size={12} strokeWidth={3} />
+        {Math.abs(change)}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex h-5 min-w-6 shrink-0 items-center justify-center rounded-full bg-white/70 px-1 text-[#8c9aa5] ring-1 ring-[rgba(10,19,23,0.08)]">
+      <Minus size={12} strokeWidth={3} />
+    </span>
+  );
 };
 
 const getRegionId = (geo: RegionFeature) => {
@@ -693,6 +736,7 @@ export default function App() {
   const recentLoanTimestampsRef = useRef<number[]>([]);
   const rivalResponseTimeoutsRef = useRef<number[]>([]);
   const selectedMonth = getMonthId(reportDate);
+  const previousDate = getPreviousDate(reportDate);
   const selectedMonthLabel = MONTHS.find((month) => month.id === selectedMonth)?.label ?? '';
 
   const persistSchools = (nextSchools: School[]) => {
@@ -804,6 +848,16 @@ export default function App() {
         rank: sortedSchools.filter((item) => item.lendingCount > school.lendingCount).length + 1,
       })),
     [sortedSchools],
+  );
+  const previousRankBySchoolId = useMemo(
+    () =>
+      new Map(
+        getRankedSchoolsByMonthDate(schools, selectedMonth, previousDate).map((school) => [
+          school.id,
+          school.rank,
+        ]),
+      ),
+    [previousDate, schools, selectedMonth],
   );
 
   const regionalCounts = useMemo(
@@ -966,7 +1020,7 @@ export default function App() {
           </div>
         </Card>
 
-        <aside className="min-h-0 space-y-4">
+        <aside className="flex min-h-0 flex-col gap-4">
           <Card className="p-4">
             <button
               type="button"
@@ -982,52 +1036,56 @@ export default function App() {
           </Card>
 
           <Card className="p-4">
-            <div className="rounded-[20px] bg-[#f5f6f7] p-4">
+            <div className="rounded-[20px] bg-[#f5f6f7] p-5">
               <div className="flex items-start justify-between gap-3">
                 <p className="min-w-0 text-sm font-bold text-[#465a69]">대구장동초등학교</p>
                 {ourSchoolRank > 0 && (
-                  <span className="shrink-0 rounded-[100px] border border-[#2f80d1] px-3 py-1 text-xs font-black text-[#005eb8]">
-                    {getRankLabel(ourSchoolRank)}
+                  <span className="inline-flex shrink-0 items-center gap-1.5 rounded-[100px] border border-[#2f80d1] bg-white/70 px-3 py-1 text-sm font-black leading-none text-[#005eb8]">
+                    {selectedMonthLabel} {getRankLabel(ourSchoolRank)}
                   </span>
                 )}
               </div>
-              <div className="mt-3 flex items-end justify-between gap-3">
+              <div className="mt-4 flex items-end justify-between gap-3">
                 <p className="text-5xl font-black leading-none tracking-[-0.16px] text-[#0143b5]">
                   {ourSchoolCount.toLocaleString()}권
                 </p>
               </div>
               <p className="mt-3 text-sm font-semibold leading-5 text-[#637381]">
-                우리 반 누적 대출 권수
+                우리 반 {selectedMonthLabel} 누적 대출 권수
               </p>
-            </div>
+              </div>
           </Card>
 
-          <Card className="p-5">
+          <Card className="flex min-h-[520px] flex-1 flex-col p-5 xl:min-h-0">
             <h2 className="mb-4 flex items-center gap-2 text-2xl font-medium text-[#0a1317]">
               <Award className="text-[#0143b5]" />
               {selectedMonthLabel} 독서 랭킹
             </h2>
-            <ol className="space-y-3">
+            <ol className="flex flex-1 flex-col justify-between gap-3">
               {rankedSchools.slice(0, 5).map((school) => {
                 const isOurSchool = school.id === ourSchool?.id;
+                const previousRank = previousRankBySchoolId.get(school.id) ?? school.rank;
+                const rankChange = previousRank - school.rank;
 
                 return (
                   <li
                     key={school.id}
-                    className={`rounded-2xl p-3 ${
+                    className={`rounded-2xl px-3 py-3 ${
                       isOurSchool
                         ? 'bg-[#eef5ff] ring-2 ring-[#0143b5]'
                         : 'bg-[#f5f6f7]'
                     }`}
                   >
-                    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3">
-                      <span className="min-w-0 truncate text-sm font-bold text-[#0a1317]">
-                        {getRankLabel(school.rank)} {school.name}
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2">
+                      <span className="flex min-w-0 items-center gap-1.5 text-sm font-bold text-[#0a1317]">
+                        <span className="shrink-0">{getRankLabel(school.rank)}</span>
+                        <RankTrendBadge change={rankChange} />
+                        <span className="min-w-0 truncate">{getCompactSchoolName(school.name)}</span>
                       </span>
-                      <span className="text-sm font-black text-[#0a1317]">
+                      <span className="text-sm font-black tabular-nums text-[#0a1317]">
                         {school.lendingCount.toLocaleString()}권
                       </span>
-                      <span className="rounded-[50px] border border-[#2f80d1] px-3 py-1 text-sm font-black text-[#005eb8]">
+                      <span className="rounded-[50px] border border-[#2f80d1] px-2.5 py-0.5 text-xs font-black text-[#005eb8]">
                         {regionShortNames[school.region] ?? school.region}
                       </span>
                     </div>
