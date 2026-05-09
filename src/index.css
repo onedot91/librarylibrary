@@ -1,1 +1,32 @@
 @import "tailwindcss";
+
+:root {
+  font-family: "Optimistic VF", Montserrat, Helvetica, Arial, "Noto Sans KR", sans-serif;
+  color: #0a1317;
+  background: #ffffff;
+  font-synthesis: none;
+  font-feature-settings: "ss01" 1, "ss02" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #ffffff;
+}
+
+button,
+input {
+  font: inherit;
+}
