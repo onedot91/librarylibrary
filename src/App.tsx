@@ -485,7 +485,6 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const selectedMonth = getMonthId(reportDate);
   const selectedMonthLabel = MONTHS.find((month) => month.id === selectedMonth)?.label ?? '';
-  const reportDateLabel = `${selectedMonthLabel} ${reportDate.getDate()}일`;
 
   const monthlySchools = useMemo<MonthlySchool[]>(
     () =>
@@ -613,11 +612,8 @@ export default function App() {
 
         <aside className="min-h-0 space-y-4">
           <Card className="p-4">
-            <div className="mb-3 flex items-start justify-between gap-3">
+            <div className="mb-3">
               <h2 className="text-xl font-medium text-[#0a1317]">우리 학교 현황</h2>
-              <span className="shrink-0 rounded-[100px] bg-[#f5f6f7] px-3 py-1 text-xs font-black text-[#465a69]">
-                {reportDateLabel}
-              </span>
             </div>
             <div className="rounded-[20px] bg-[#f5f6f7] p-4">
               <div className="flex items-start justify-between gap-3">
@@ -642,7 +638,7 @@ export default function App() {
           <Card className="p-5">
             <h2 className="mb-4 flex items-center gap-2 text-2xl font-medium text-[#0a1317]">
               <Award className="text-[#0143b5]" />
-              {selectedMonthLabel} Top 5
+              {selectedMonthLabel} 독서 랭킹
             </h2>
             <ol className="space-y-3">
               {rankedSchools.slice(0, 5).map((school) => {
