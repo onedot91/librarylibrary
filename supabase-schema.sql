@@ -65,10 +65,21 @@ drop table if exists public.ambient_growth_state;
 create table if not exists public.book_loans (
   id uuid primary key default gen_random_uuid(),
   school_id text not null,
+  student_number text not null,
   title text not null,
   author text not null,
   created_at timestamptz not null default now()
 );
+
+alter table public.book_loans
+add column if not exists student_number text;
+
+update public.book_loans
+set student_number = '미입력'
+where student_number is null;
+
+alter table public.book_loans
+alter column student_number set not null;
 
 alter table public.book_loans enable row level security;
 
@@ -86,6 +97,7 @@ for insert
 to anon
 with check (
   school_id = 'daegu'
+  and length(trim(student_number)) > 0
   and length(trim(title)) > 0
   and length(trim(author)) > 0
 );

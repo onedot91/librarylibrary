@@ -9,6 +9,7 @@ export type SchoolCountRow = {
 
 export type BookLoanInsert = {
   school_id: string;
+  student_number: string;
   title: string;
   author: string;
 };

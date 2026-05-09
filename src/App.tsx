@@ -658,16 +658,20 @@ const DataSettingsModal = ({
 const BookLoanModal = ({
   bookAuthor,
   errorMessage,
+  studentNumber,
   bookTitle,
   onBookAuthorChange,
+  onStudentNumberChange,
   onBookTitleChange,
   onClose,
   onSubmit,
 }: {
   bookAuthor: string;
   errorMessage: string;
+  studentNumber: string;
   bookTitle: string;
   onBookAuthorChange: (author: string) => void;
+  onStudentNumberChange: (studentNumber: string) => void;
   onBookTitleChange: (title: string) => void;
   onClose: () => void;
   onSubmit: () => void;
@@ -692,13 +696,25 @@ const BookLoanModal = ({
           onSubmit();
         }}
       >
-        <label className="block text-sm font-black text-[#0a1317]" htmlFor="book-title-modal">
+        <label className="block text-sm font-black text-[#0a1317]" htmlFor="student-number-modal">
+          자신의 번호
+        </label>
+        <input
+          id="student-number-modal"
+          type="text"
+          inputMode="numeric"
+          autoFocus
+          value={studentNumber}
+          onChange={(event) => onStudentNumberChange(event.target.value)}
+          placeholder="자신의 번호를 입력하세요"
+          className="mt-3 h-12 w-full min-w-0 rounded-xl border border-[rgba(10,19,23,0.12)] bg-white px-3 text-base font-bold text-[#0a1317] outline-none transition placeholder:text-[#8c9aa5] focus:border-2 focus:border-[#0866ff]"
+        />
+        <label className="mt-4 block text-sm font-black text-[#0a1317]" htmlFor="book-title-modal">
           책 제목
         </label>
         <input
           id="book-title-modal"
           type="text"
-          autoFocus
           value={bookTitle}
           onChange={(event) => onBookTitleChange(event.target.value)}
           placeholder="책 제목을 입력하세요"
@@ -720,7 +736,7 @@ const BookLoanModal = ({
         )}
         <button
           type="submit"
-          disabled={!bookTitle.trim() || !bookAuthor.trim()}
+          disabled={!studentNumber.trim() || !bookTitle.trim() || !bookAuthor.trim()}
           className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0143b5] px-4 text-sm font-black text-white transition hover:bg-[#0064e0] active:scale-95 disabled:cursor-not-allowed disabled:bg-[#aebbd0] disabled:active:scale-100"
         >
           <Plus size={18} />
@@ -736,6 +752,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isBookLoanModalOpen, setIsBookLoanModalOpen] = useState(false);
   const [bookAuthor, setBookAuthor] = useState('');
+  const [studentNumber, setStudentNumber] = useState('');
   const [bookTitle, setBookTitle] = useState('');
   const [loanSubmitError, setLoanSubmitError] = useState('');
   const [syncStatus, setSyncStatus] = useState(
@@ -931,13 +948,15 @@ export default function App() {
 
   const addOurSchoolLoan = async () => {
     const author = bookAuthor.trim();
+    const normalizedStudentNumber = studentNumber.trim();
     const title = bookTitle.trim();
-    if (!title || !author) return;
+    if (!normalizedStudentNumber || !title || !author) return;
 
     setLoanSubmitError('');
 
     const { error } = await insertBookLoan({
       school_id: OUR_SCHOOL_ID,
+      student_number: normalizedStudentNumber,
       title,
       author,
     });
@@ -960,6 +979,7 @@ export default function App() {
     });
     scheduleRivalResponse();
     setBookAuthor('');
+    setStudentNumber('');
     setBookTitle('');
     setIsBookLoanModalOpen(false);
   };
@@ -1119,11 +1139,14 @@ export default function App() {
         <BookLoanModal
           bookAuthor={bookAuthor}
           errorMessage={loanSubmitError}
+          studentNumber={studentNumber}
           bookTitle={bookTitle}
           onBookAuthorChange={setBookAuthor}
+          onStudentNumberChange={setStudentNumber}
           onBookTitleChange={setBookTitle}
           onClose={() => {
             setBookAuthor('');
+            setStudentNumber('');
             setBookTitle('');
             setLoanSubmitError('');
             setIsBookLoanModalOpen(false);
