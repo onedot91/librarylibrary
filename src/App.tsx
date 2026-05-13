@@ -547,10 +547,20 @@ const KoreaMap = ({
                   y1={-4}
                   x2={52}
                   y2={-34}
-                  stroke="#0143b5"
-                  strokeWidth={2}
+                  stroke="#ffffff"
+                  strokeWidth={6}
                   strokeLinecap="round"
-                  opacity={0.72}
+                  opacity={0.95}
+                />
+                <line
+                  x1={8}
+                  y1={-4}
+                  x2={52}
+                  y2={-34}
+                  stroke="#0143b5"
+                  strokeWidth={3}
+                  strokeLinecap="round"
+                  opacity={0.95}
                 />
                 <g transform="translate(52 -70)">
                   <rect
@@ -1286,7 +1296,7 @@ export default function App() {
               <Award className="text-[#0143b5]" />
               {selectedMonthLabel} 독서 랭킹
             </h2>
-            <ol className="flex flex-1 flex-col justify-between gap-3">
+            <ol className="flex flex-1 flex-col justify-start gap-2">
               {rankedSchools.slice(0, 5).map((school) => {
                 const isOurSchool = school.id === ourSchool?.id;
                 const previousRank = previousRankBySchoolId.get(school.id) ?? school.rank;
