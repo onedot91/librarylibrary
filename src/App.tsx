@@ -893,10 +893,82 @@ const BookLoanModal = ({
   </div>
 );
 
+const BookLoanConfirmModal = ({
+  bookAuthor,
+  bookTitle,
+  isSubmitting,
+  studentNumber,
+  onCancel,
+  onConfirm,
+}: {
+  bookAuthor: string;
+  bookTitle: string;
+  isSubmitting: boolean;
+  studentNumber: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) => (
+  <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45 p-4">
+    <section
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="book-loan-confirm-title"
+      className="w-full max-w-sm rounded-[28px] border border-[rgba(10,19,23,0.08)] bg-white shadow-[rgba(20,22,26,0.28)_0px_12px_30px_0px]"
+    >
+      <header className="border-b border-[rgba(10,19,23,0.08)] px-6 py-5">
+        <div className="flex items-center gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#eef5ff] text-[#0143b5]">
+            <BookOpenText size={20} />
+          </span>
+          <h2 id="book-loan-confirm-title" className="text-xl font-black text-[#0a1317]">
+            입력한 내용이 맞나요?
+          </h2>
+        </div>
+      </header>
+      <div className="px-6 py-5">
+        <dl className="grid gap-3 rounded-2xl bg-[#f5f6f7] p-4">
+          <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+            <dt className="text-sm font-black text-[#465a69]">자신의 번호</dt>
+            <dd className="min-w-0 break-words text-sm font-black text-[#0a1317]">{studentNumber}</dd>
+          </div>
+          <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+            <dt className="text-sm font-black text-[#465a69]">책 제목</dt>
+            <dd className="min-w-0 break-words text-sm font-black text-[#0a1317]">{bookTitle}</dd>
+          </div>
+          <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+            <dt className="text-sm font-black text-[#465a69]">글쓴이</dt>
+            <dd className="min-w-0 break-words text-sm font-black text-[#0a1317]">{bookAuthor}</dd>
+          </div>
+        </dl>
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="inline-flex h-12 items-center justify-center rounded-xl border border-[rgba(10,19,23,0.12)] bg-white px-4 text-sm font-black text-[#465a69] transition hover:bg-[#f5f6f7] active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 disabled:active:scale-100"
+          >
+            다시 확인
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isSubmitting}
+            className="inline-flex h-12 items-center justify-center rounded-xl bg-[#0143b5] px-4 text-sm font-black text-white transition hover:bg-[#0064e0] active:scale-95 disabled:cursor-not-allowed disabled:bg-[#aebbd0] disabled:active:scale-100"
+          >
+            {isSubmitting ? '등록 중' : '최종 등록'}
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+);
+
 export default function App() {
   const [schools, setSchools] = useState<School[]>(getStoredSchools);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isBookLoanModalOpen, setIsBookLoanModalOpen] = useState(false);
+  const [isBookLoanConfirmOpen, setIsBookLoanConfirmOpen] = useState(false);
+  const [isLoanSubmitting, setIsLoanSubmitting] = useState(false);
   const [bookAuthor, setBookAuthor] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
   const [bookTitle, setBookTitle] = useState('');
@@ -1113,12 +1185,15 @@ export default function App() {
   };
 
   const addOurSchoolLoan = async () => {
+    if (isLoanSubmitting) return;
+
     const author = bookAuthor.trim();
     const normalizedStudentNumber = studentNumber.trim();
     const title = bookTitle.trim();
     if (!normalizedStudentNumber || !title || !author) return;
 
     setLoanSubmitError('');
+    setIsLoanSubmitting(true);
 
     const { data, error } = await insertBookLoan({
       school_id: OUR_SCHOOL_ID,
@@ -1130,6 +1205,7 @@ export default function App() {
     if (error) {
       console.error('Book loan insert failed:', error);
       setLoanSubmitError(getBookLoanErrorMessage(error));
+      setIsLoanSubmitting(false);
       return;
     }
 
@@ -1154,7 +1230,16 @@ export default function App() {
     setBookAuthor('');
     setStudentNumber('');
     setBookTitle('');
+    setIsBookLoanConfirmOpen(false);
     setIsBookLoanModalOpen(false);
+    setIsLoanSubmitting(false);
+  };
+
+  const openBookLoanConfirm = () => {
+    if (!studentNumber.trim() || !bookTitle.trim() || !bookAuthor.trim()) return;
+
+    setLoanSubmitError('');
+    setIsBookLoanConfirmOpen(true);
   };
 
   const removeOurSchoolLoan = async (loan: BookLoanRow) => {
@@ -1261,6 +1346,7 @@ export default function App() {
               type="button"
               onClick={() => {
                 setLoanSubmitError('');
+                setIsBookLoanConfirmOpen(false);
                 setIsBookLoanModalOpen(true);
               }}
               className="inline-flex h-14 w-full items-center justify-center gap-2 rounded-[18px] bg-[#0143b5] px-4 text-base font-black text-white transition hover:bg-[#0064e0] active:scale-95"
@@ -1358,9 +1444,20 @@ export default function App() {
             setStudentNumber('');
             setBookTitle('');
             setLoanSubmitError('');
+            setIsBookLoanConfirmOpen(false);
             setIsBookLoanModalOpen(false);
           }}
-          onSubmit={addOurSchoolLoan}
+          onSubmit={openBookLoanConfirm}
+        />
+      )}
+      {isBookLoanConfirmOpen && (
+        <BookLoanConfirmModal
+          bookAuthor={bookAuthor.trim()}
+          bookTitle={bookTitle.trim()}
+          isSubmitting={isLoanSubmitting}
+          studentNumber={studentNumber.trim()}
+          onCancel={() => setIsBookLoanConfirmOpen(false)}
+          onConfirm={addOurSchoolLoan}
         />
       )}
     </main>
