@@ -193,9 +193,16 @@ const applyRivalGrowth = (
         count: getMonthToDateCount(school.monthlyLending[selectedMonth] ?? 0, reportDate),
       }));
     const leaderCount = Math.max(ourCount, ...rivals.map((rival) => rival.count));
+    const biggestRivalDeficit = rivals.reduce((maxDeficit, rival) => Math.max(maxDeficit, ourCount - rival.count), 0);
     const isOurSchoolLeading = ourCount >= leaderCount;
-    const baseResponseChance = isOurSchoolLeading ? 0.46 : 0.24;
-    const responseChance = Math.min(isOurSchoolLeading ? 0.68 : 0.42, baseResponseChance * responseIntensity);
+    const baseResponseChance = isOurSchoolLeading
+      ? biggestRivalDeficit >= 12
+        ? 0.72
+        : biggestRivalDeficit >= 8
+          ? 0.58
+          : 0.46
+      : 0.24;
+    const responseChance = Math.min(isOurSchoolLeading ? 0.86 : 0.42, baseResponseChance * responseIntensity);
 
     if (Math.random() > responseChance) continue;
 
@@ -203,6 +210,19 @@ const applyRivalGrowth = (
       .map((rival) => {
         const gapFromUs = rival.count - ourCount;
         const leadGap = leaderCount - ourCount;
+        const deficitFromUs = ourCount - rival.count;
+
+        if (isOurSchoolLeading && deficitFromUs >= 18) {
+          return { ...rival, weight: 4.2 };
+        }
+
+        if (isOurSchoolLeading && deficitFromUs >= 12) {
+          return { ...rival, weight: 3.2 };
+        }
+
+        if (isOurSchoolLeading && deficitFromUs >= 8) {
+          return { ...rival, weight: 2.3 };
+        }
 
         if (gapFromUs >= leadGap && leadGap >= 4) {
           return { ...rival, weight: 0.06 };
@@ -222,7 +242,17 @@ const applyRivalGrowth = (
 
     const responseCount = Math.min(
       weightedRivals.length,
-      isOurSchoolLeading ? (Math.random() < 0.35 ? 3 : 2) : Math.random() < 0.3 ? 2 : 1,
+      isOurSchoolLeading
+        ? biggestRivalDeficit >= 12
+          ? Math.random() < 0.45
+            ? 4
+            : 3
+          : Math.random() < 0.35
+            ? 3
+            : 2
+        : Math.random() < 0.3
+          ? 2
+          : 1,
     );
     const selectedRivals = [];
     let remainingRivals = weightedRivals;
@@ -250,14 +280,25 @@ const applyRivalGrowth = (
         [ourCount, ...rivals.map((rival) => rival.count)].filter((count) => count > selectedRival.count).length + 1;
       const isLowerRankedRival = selectedRank >= Math.max(4, Math.ceil(totalSchoolCount * 0.6));
       const boostRoll = Math.random();
+      const deficitFromUs = ourCount - selectedRival.count;
       let increment = 1;
 
-      if (isOurSchoolLeading && isLowerRankedRival) {
+      if (isOurSchoolLeading && deficitFromUs >= 18) {
+        increment = boostRoll < 0.25 ? 4 : boostRoll < 0.65 ? 3 : 2;
+      } else if (isOurSchoolLeading && deficitFromUs >= 12) {
+        increment = boostRoll < 0.55 ? 3 : 2;
+      } else if (isOurSchoolLeading && deficitFromUs >= 8) {
+        increment = boostRoll < 0.65 ? 2 : 1;
+      } else if (isOurSchoolLeading && isLowerRankedRival) {
         increment = boostRoll < 0.25 ? 3 : boostRoll < 0.7 ? 2 : 1;
       } else if (isOurSchoolLeading) {
         increment = boostRoll < 0.25 ? 2 : 1;
       } else if (isLowerRankedRival) {
         increment = boostRoll < 0.35 ? 2 : 1;
+      }
+
+      if (isOurSchoolLeading && deficitFromUs >= 8) {
+        increment = Math.max(1, Math.min(increment, ourCount - 4 - selectedRival.count));
       }
 
       nextSchools = nextSchools.map((school) =>

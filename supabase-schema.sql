@@ -155,6 +155,7 @@ declare
   our_count integer := 0;
   leader_count integer := 0;
   lead_gap integer := 0;
+  biggest_rival_deficit integer := 0;
   response_chance numeric;
   response_school_count integer;
   selected_rival record;
@@ -180,8 +181,20 @@ begin
   from public.school_lending_counts
   where id <> our_school_id;
 
+  select coalesce(max(our_count - public.get_month_to_date_count(coalesce((monthly_lending ->> month_id)::integer, 0), reference_date)), 0)
+  into biggest_rival_deficit
+  from public.school_lending_counts
+  where id <> our_school_id;
+
   if our_count >= leader_count then
-    response_chance := least(0.68, 0.46 * response_intensity);
+    response_chance := least(
+      0.86,
+      case
+        when biggest_rival_deficit >= 12 then 0.72
+        when biggest_rival_deficit >= 8 then 0.58
+        else 0.46
+      end * response_intensity
+    );
   else
     response_chance := least(0.42, 0.24 * response_intensity);
   end if;
@@ -197,7 +210,11 @@ begin
   from public.school_lending_counts;
 
   if our_count >= leader_count then
-    response_school_count := case when random() < 0.35 then 3 else 2 end;
+    response_school_count := case
+      when biggest_rival_deficit >= 12 then case when random() < 0.45 then 4 else 3 end
+      when random() < 0.35 then 3
+      else 2
+    end;
   else
     response_school_count := case when random() < 0.3 then 2 else 1 end;
   end if;
@@ -215,6 +232,9 @@ begin
         id,
         lending_count,
         case
+          when our_count >= leader_count and our_count - lending_count >= 18 then 4.2
+          when our_count >= leader_count and our_count - lending_count >= 12 then 3.2
+          when our_count >= leader_count and our_count - lending_count >= 8 then 2.3
           when lending_count - our_count >= lead_gap and lead_gap >= 4 then 0.06
           when lending_count - our_count between 1 and 3 then 1.4
           when lending_count - our_count between -3 and 0 then
@@ -239,7 +259,17 @@ begin
     boost_roll := random();
     increment_amount := 1;
 
-    if our_count >= leader_count and is_lower_ranked_rival then
+    if our_count >= leader_count and our_count - selected_rival.lending_count >= 18 then
+      increment_amount := case
+        when boost_roll < 0.25 then 4
+        when boost_roll < 0.65 then 3
+        else 2
+      end;
+    elsif our_count >= leader_count and our_count - selected_rival.lending_count >= 12 then
+      increment_amount := case when boost_roll < 0.55 then 3 else 2 end;
+    elsif our_count >= leader_count and our_count - selected_rival.lending_count >= 8 then
+      increment_amount := case when boost_roll < 0.65 then 2 else 1 end;
+    elsif our_count >= leader_count and is_lower_ranked_rival then
       increment_amount := case
         when boost_roll < 0.25 then 3
         when boost_roll < 0.7 then 2
@@ -249,6 +279,10 @@ begin
       increment_amount := case when boost_roll < 0.25 then 2 else 1 end;
     elsif is_lower_ranked_rival then
       increment_amount := case when boost_roll < 0.35 then 2 else 1 end;
+    end if;
+
+    if our_count >= leader_count and our_count - selected_rival.lending_count >= 8 then
+      increment_amount := greatest(1, least(increment_amount, our_count - 4 - selected_rival.lending_count));
     end if;
 
     perform public.increment_school_month_to_date_count(selected_rival.id, month_id, increment_amount, reference_date);
